@@ -1,0 +1,15 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+evm_version = "prague"
+solc_version = "0.8.29"
+
+remappings = [
+  "calibur/=lib/calibur/src/",
+  "forge-std/=lib/forge-std/src/",
+  "solady/=lib/calibur/lib/solady/src/",
+  "@openzeppelin/=lib/calibur/lib/openzeppelin-contracts/",
+  "account-abstraction/=lib/calibur/lib/account-abstraction/",
+  "permit2/=lib/calibur/lib/permit2/",
+]
