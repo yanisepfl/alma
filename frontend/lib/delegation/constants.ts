@@ -24,9 +24,12 @@ export const KNOWN_TOKENS: Address[] = [
   "0x4200000000000000000000000000000000000006", // WETH
 ];
 
-// Backend API URL
+// In production, /backend/* is proxied via Next.js rewrites to the VM
+// In dev, hit localhost directly
 export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+  typeof window !== "undefined" && window.location.hostname !== "localhost"
+    ? "/backend"
+    : "http://localhost:3001";
 
 // ── Function Selectors ─────��──────────────────────────────────────────────
 export const SELECTORS = {

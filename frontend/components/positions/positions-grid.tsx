@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { usePositionContext } from "@/hooks/use-position-context";
 import { useDelegation } from "@/hooks/use-delegation";
 import { QUIRKY_MESSAGES } from "@/lib/positions/constants";
+import { API_URL } from "@/lib/delegation/constants";
 import { PositionCard } from "./position-card";
 import { DelegationStepper } from "@/components/delegation/delegation-stepper";
 
@@ -52,12 +53,30 @@ export function PositionsGrid() {
   const isDelegated = delegationStatus === "delegated";
 
   useEffect(() => {
-    const posCount = positions.length;
-    const rebalanceCount = Math.floor(Math.random() * 4) + 1;
-    setMessage(
-      `I rebalanced ${posCount || 0} position${posCount !== 1 ? "s" : ""} ${rebalanceCount} time${rebalanceCount !== 1 ? "s" : ""} today!`
-    );
-  }, [positions.length]);
+    // Fetch global stats from backend
+    fetch(`${API_URL}/api/actions`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => {
+        const actions = Array.isArray(data) ? data : data?.actions ?? [];
+        const today = Date.now() - 24 * 60 * 60 * 1000;
+        const todayActions = actions.filter((a: any) => a.timestamp > today);
+        const rebalances = todayActions.filter((a: any) => a.type === "rebalance");
+        const uniquePositions = new Set(rebalances.map((a: any) => a.tokenId).filter(Boolean));
+
+        if (rebalances.length > 0) {
+          setMessage(
+            `I rebalanced ${uniquePositions.size} position${uniquePositions.size !== 1 ? "s" : ""} ${rebalances.length} time${rebalances.length !== 1 ? "s" : ""} today!`
+          );
+        } else if (todayActions.length > 0) {
+          setMessage(`I monitored ${todayActions.length} position${todayActions.length !== 1 ? "s" : ""} today!`);
+        } else {
+          setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
+        }
+      })
+      .catch(() => {
+        setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
+      });
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil((positions.length + 1) / PAGE_SIZE));
   const startIdx = page * PAGE_SIZE;

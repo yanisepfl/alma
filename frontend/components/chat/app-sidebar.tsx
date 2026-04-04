@@ -6,7 +6,8 @@ import { useEffect, useState } from "react";
 import { usePositionContext } from "@/hooks/use-position-context";
 import { useAccount } from "wagmi";
 
-const AGENT_API = process.env.NEXT_PUBLIC_AGENT_API ?? "http://localhost:3001";
+import { API_URL } from "@/lib/delegation/constants";
+const AGENT_API = API_URL;
 
 interface AgentAction {
   id: string;
