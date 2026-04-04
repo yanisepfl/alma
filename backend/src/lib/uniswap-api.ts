@@ -68,14 +68,16 @@ export interface Swap7702Response {
   gasFee?: string;
 }
 
+export interface Encode7702Call {
+  to: string;
+  from: string;
+  data: string;
+  value: string;
+  chainId: number;
+}
+
 export interface Encode7702Request {
-  calls: Array<{
-    to: string;
-    from?: string;
-    data: string;
-    value: string;
-    chainId: number;
-  }>;
+  calls: Encode7702Call[];
   smartContractDelegationAddress: string;
   walletAddress: string;
 }
@@ -137,6 +139,18 @@ export class UniswapApiClient {
   // ── /quote ──────────────────────────────────────────────────────────────
   async quote(params: QuoteRequest): Promise<QuoteResponse> {
     return this.post<QuoteResponse>('/quote', params);
+  }
+
+  // ── /swap ───────────────────────────────────────────────────────────────
+  /** Standard swap — returns calldata targeting UniversalRouter directly. */
+  async swap(params: {
+    quote: any;
+    signature?: string;
+    permitData?: any;
+    simulateTransaction?: boolean;
+    deadline?: number;
+  }): Promise<Swap7702Response> {
+    return this.post<Swap7702Response>('/swap', params);
   }
 
   // ── /swap_7702 ──────────────────────────────────────────────────────────

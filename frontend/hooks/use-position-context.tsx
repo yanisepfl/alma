@@ -122,6 +122,12 @@ export function PositionProvider({ children }: { children: ReactNode }) {
           currentTick
         );
 
+        // Skip positions with zero liquidity (fully withdrawn)
+        if (liquidity === 0n) {
+          console.log(`[positions] Skipping #${tokenId} — zero liquidity`);
+          return;
+        }
+
         const enriched: EnrichedPosition = {
           tokenId,
           poolKey,

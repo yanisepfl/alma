@@ -246,10 +246,12 @@ export async function submitBatchedCall(params: {
 
   // Send the transaction TO the user's delegated EOA
   // (Calibur code is loaded there via 7702)
+  // Set manual gas to skip eth_estimateGas which may fail on 7702 delegated EOAs
   const txHash = await walletClient.sendTransaction({
     to: userEOA,
     data: calldata,
     value: 0n,
+    gas: 800_000n,
     chain: config.chain,
   });
 

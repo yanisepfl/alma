@@ -69,10 +69,27 @@ export async function enrichPosition(
   const amount0 = formatUnits(amount0Raw, dec0);
   const amount1 = formatUnits(amount1Raw, dec1);
 
-  // 2. Get USD prices
-  const prices = await getTokenPrices([token0Symbol, token1Symbol]);
-  const price0 = prices[token0Symbol] ?? 0;
-  const price1 = prices[token1Symbol] ?? 0;
+  // 2. Get USD prices — use pool price for USD-paired pools, fallback to CoinGecko
+  const STABLECOINS = ["USDC", "USDS", "USDT", "DAI"];
+  const poolPrice = parseFloat(v4Pool.token0Price.toSignificant(8));
+
+  let price0 = 0;
+  let price1 = 0;
+
+  if (STABLECOINS.includes(token1Symbol)) {
+    // token1 is USD-stable → pool price gives us token0 price in USD
+    price1 = 1;
+    price0 = poolPrice; // token0 per token1 = token0 in USD
+  } else if (STABLECOINS.includes(token0Symbol)) {
+    // token0 is USD-stable
+    price0 = 1;
+    price1 = poolPrice > 0 ? 1 / poolPrice : 0;
+  } else {
+    // Neither is a stablecoin — try CoinGecko
+    const prices = await getTokenPrices([token0Symbol, token1Symbol]);
+    price0 = prices[token0Symbol] ?? 0;
+    price1 = prices[token1Symbol] ?? 0;
+  }
 
   const positionSizeUSD = parseFloat(amount0) * price0 + parseFloat(amount1) * price1;
 

@@ -1,11 +1,23 @@
 /**
  * Rebalance Orchestrator
  *
- * Ties together: position monitoring → decision → calldata construction → Calibur batch.
- * This is the "brain" of the agent.
+ * Ties together: position monitoring -> decision -> API calls -> execution.
+ *
+ * Rebalance flow (single batched transaction via encode_7702):
+ *   1. Build burn calldata (V4 PositionManager)
+ *   2. Get swap calldata from Uniswap Trade API (/quote + /swap_7702)
+ *   3. Build mint calldata (V4 PositionManager)
+ *   4. Batch all via Uniswap /wallet/encode_7702
+ *   5. Submit encoded transaction to user's delegated EOA
  */
 
-import { type Address, type Hex } from 'viem';
+import {
+  type Address,
+  type Hex,
+  type Account,
+  type WalletClient,
+  type PublicClient,
+} from 'viem';
 
 import { type ChainConfig } from './config.js';
 import {
@@ -17,18 +29,18 @@ import { type PoolWhitelist } from './call-validator.js';
 import {
   buildBurnCalldata,
   buildMintCalldata,
+  buildApprovalCalls,
   computeNewRange,
+  estimateBurnAmounts,
   type CaliburCall,
 } from './calldata-builders.js';
-import { UniswapApiClient, type QuoteResponse } from './uniswap-api.js';
+import { UniswapApiClient } from './uniswap-api.js';
 import {
   buildSignedBatchedCall,
   submitBatchedCall,
   isKeyRegistered,
-  type SignedBatchedCall,
 } from './calibur.js';
 
-// Re-export CaliburCall so it's available from here
 export type { CaliburCall } from './calldata-builders.js';
 
 // ---------------------------------------------------------------------------
@@ -41,13 +53,14 @@ export interface RebalanceDecision {
   status: PositionStatus;
 }
 
-export interface RebalancePlan {
-  decision: RebalanceDecision;
-  burnCall: CaliburCall;
-  swapCall: CaliburCall;
-  mintCall: CaliburCall;
-  newRange: { tickLower: number; tickUpper: number };
-  swapQuote: QuoteResponse;
+export interface RebalanceResult {
+  success: boolean;
+  tokenId: string;
+  txHash?: string;
+  blockNumber?: bigint;
+  newRange?: { tickLower: number; tickUpper: number };
+  error?: string;
+  details?: Record<string, any>;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,9 +68,7 @@ export interface RebalancePlan {
 // ---------------------------------------------------------------------------
 
 export interface RebalanceThresholds {
-  /** Minimum % out of range to trigger (default: 5%) */
   minPercentOutOfRange: number;
-  /** Minimum position liquidity to bother (default: 0 = any) */
   minLiquidity: bigint;
 }
 
@@ -100,7 +111,7 @@ export async function evaluateRebalance(
   if (status.percentOutOfRange < thresholds.minPercentOutOfRange) {
     return {
       shouldRebalance: false,
-      reason: `Only ${status.percentOutOfRange.toFixed(1)}% out of range — below ${thresholds.minPercentOutOfRange}% threshold, may return`,
+      reason: `Only ${status.percentOutOfRange.toFixed(1)}% out of range — below ${thresholds.minPercentOutOfRange}% threshold`,
       status,
     };
   }
@@ -113,119 +124,237 @@ export async function evaluateRebalance(
 }
 
 // ---------------------------------------------------------------------------
-// 2. Plan — construct the full rebalance batch
+// 2. Execute — single-batch rebalance via Uniswap encode_7702
 // ---------------------------------------------------------------------------
 
-export async function planRebalance(params: {
+export async function executeRebalance(params: {
+  tokenId: bigint;
+  userEOA: Address;
   decision: RebalanceDecision;
   config: ChainConfig;
-  userEOA: Address;
+  agentAccount: Account;
+  walletClient: WalletClient;
+  publicClient: PublicClient;
   uniswapApi: UniswapApiClient;
-  /** Token decimals: [currency0Decimals, currency1Decimals] */
-  tokenDecimals: [number, number];
-  /** Width multiplier for new range (default: 10 tick spacings each side) */
   rangeWidthMultiplier?: number;
-}): Promise<RebalancePlan> {
-  const { decision, config, userEOA, uniswapApi, tokenDecimals, rangeWidthMultiplier = 10 } = params;
-  const { status } = decision;
-  const { position, pool, poolId } = status;
-
-  // Step 1: Build burn calldata
-  const burn = buildBurnCalldata({
-    position,
-    pool,
-    config,
-    recipient: userEOA,
-  });
-
-  const burnCall: CaliburCall = {
-    to: burn.to,
-    value: burn.value,
-    data: burn.calldata,
-  };
-
-  // Step 2: Determine which token we have excess of (the one we need to swap FROM)
-  // When out of range below: we hold 100% token0, need to swap some to token1
-  // When out of range above: we hold 100% token1, need to swap some to token0
-  const currentTick = pool.tick;
-  const outBelow = currentTick < position.tickLower;
-
-  const tokenIn = outBelow ? position.poolKey.currency0 : position.poolKey.currency1;
-  const tokenOut = outBelow ? position.poolKey.currency1 : position.poolKey.currency0;
-
-  // For the quote, we need to estimate how much to swap.
-  // After burn, we'll have all liquidity in one token. We swap ~50% to get a balanced ratio.
-  // This is a simplification — a real agent would calculate the exact ratio for the new range.
-  // For now, we use a placeholder amount that gets refined once we know the burn output.
-  // TODO: In the real flow, we'd simulate the burn first to know exact amounts.
-
-  // Step 3: Get swap quote from Uniswap API
-  // NOTE: The actual swap amount depends on burn output, which we don't know until execution.
-  // For planning, we use the Uniswap API quote with an estimated amount.
-  // The real flow will use the swap_7702 endpoint for delegated execution.
-  const swapQuote = await uniswapApi.quote({
-    type: 'EXACT_INPUT',
-    amount: '1000000', // Placeholder — real amount comes from burn simulation
-    tokenInChainId: config.chainId,
-    tokenOutChainId: config.chainId,
-    tokenIn: tokenIn,
-    tokenOut: tokenOut,
-    swapper: userEOA,
-    slippageTolerance: 0.5,
-  });
-
-  // Step 4: Get swap calldata via swap_7702
-  const swapResponse = await uniswapApi.swap7702({
-    quote: swapQuote.quote,
-    permitData: swapQuote.permitData,
-    smartContractDelegationAddress: config.contracts.calibur,
-    includeGasInfo: true,
-  });
-
-  const swapCall: CaliburCall = {
-    to: swapResponse.swap.to as Address,
-    value: BigInt(swapResponse.swap.value || '0'),
-    data: swapResponse.swap.data as Hex,
-  };
-
-  // Step 5: Compute new range centered on current tick
-  const newRange = computeNewRange({
-    currentTick: pool.tick,
-    tickSpacing: position.poolKey.tickSpacing,
-    widthMultiplier: rangeWidthMultiplier,
-  });
-
-  // Step 6: Build mint calldata
-  // For the mint, we use the swap output + remaining token to create a balanced position.
-  // Again, exact amounts depend on the swap output.
-  const mintResult = buildMintCalldata({
-    pool,
-    poolKey: position.poolKey,
-    config,
-    tickLower: newRange.tickLower,
-    tickUpper: newRange.tickUpper,
-    amount0: 1000000n, // Placeholder — real amount from swap output
-    amount1: 1000000n, // Placeholder
-    token0Decimals: tokenDecimals[0],
-    token1Decimals: tokenDecimals[1],
-    recipient: userEOA,
-    slippageBps: 100, // 1% for rebalance
-  });
-
-  const mintCall: CaliburCall = {
-    to: mintResult.to,
-    value: mintResult.value,
-    data: mintResult.calldata,
-  };
-
-  return {
+}): Promise<RebalanceResult> {
+  const {
+    tokenId,
+    userEOA,
     decision,
-    burnCall,
-    swapCall,
-    mintCall,
-    newRange,
-    swapQuote,
-  };
+    config,
+    agentAccount,
+    walletClient,
+    publicClient,
+    uniswapApi,
+    rangeWidthMultiplier = 10,
+  } = params;
+
+  const { status } = decision;
+  const { position, pool } = status;
+  const tokenIdStr = tokenId.toString();
+
+  const log = (msg: string) => console.log(`  [rebalance #${tokenIdStr}] ${msg}`);
+
+  try {
+    // ─── PRE-CHECK: Verify Calibur delegation ────────────────────────────
+
+    log('Pre-check: Verifying Calibur delegation...');
+    try {
+      const registered = await isKeyRegistered(userEOA, agentAccount.address, config);
+      if (!registered) {
+        log('Agent key NOT registered — user must delegate via frontend first');
+        return {
+          success: false, tokenId: tokenIdStr,
+          error: 'Agent key not registered. User must delegate via frontend first.',
+        };
+      }
+      log('Agent key registered');
+    } catch (e: any) {
+      const shortErr = e.shortMessage || e.message?.split('\n')[0] || 'unknown';
+      log(`Delegation check failed: ${shortErr}`);
+      return {
+        success: false, tokenId: tokenIdStr,
+        error: `User EOA not delegated to Calibur: ${shortErr}`,
+      };
+    }
+
+    // ─── STEP 1: Build burn calldata ─────────────────────────────────────
+
+    log('Building burn calldata...');
+    const burnEstimate = estimateBurnAmounts(position, pool);
+    log(`  Estimated burn output: ${burnEstimate.amount0} token0, ${burnEstimate.amount1} token1`);
+
+    const burn = buildBurnCalldata({
+      position,
+      pool,
+      config,
+      recipient: userEOA,
+    });
+    log(`  Burn calldata: ${burn.calldata.length} chars`);
+
+    // ─── STEP 2: Get swap calldata from Uniswap API ─────────────────────
+
+    log('Getting swap calldata from Uniswap API...');
+    const currentTick = pool.tick;
+    const outBelow = currentTick < position.tickLower;
+    const tokenIn = outBelow ? position.poolKey.currency0 : position.poolKey.currency1;
+    const tokenOut = outBelow ? position.poolKey.currency1 : position.poolKey.currency0;
+    const totalIn = outBelow ? burnEstimate.amount0 : burnEstimate.amount1;
+    const swapAmount = totalIn / 2n;
+
+    let swapCall: { to: string; data: string; value: string } | null = null;
+
+    if (swapAmount > 0n) {
+      log(`  Direction: ${outBelow ? 'token0 -> token1' : 'token1 -> token0'}`);
+      log(`  Swap amount: ${swapAmount}`);
+
+      const quote = await uniswapApi.quote({
+        type: 'EXACT_INPUT',
+        amount: swapAmount.toString(),
+        tokenInChainId: config.chainId,
+        tokenOutChainId: config.chainId,
+        tokenIn,
+        tokenOut,
+        swapper: userEOA,
+        slippageTolerance: 0.5,
+      });
+
+      log(`  Quote: ${quote.quote.input.amount} in -> ${quote.quote.output.amount} out`);
+      log(`  Route: ${quote.quote.routeString}`);
+
+      // Use /swap (not /swap_7702) to get raw UniversalRouter calldata
+      // swap_7702 wraps in an execute(BatchedCall) targeting the EOA which
+      // doesn't work inside our Calibur signed batch
+      const swapParams: any = { quote: quote.quote };
+      if (quote.permitData) swapParams.permitData = quote.permitData;
+      const swapResponse = await uniswapApi.swap(swapParams);
+
+      swapCall = {
+        to: swapResponse.swap.to,
+        data: swapResponse.swap.data,
+        value: swapResponse.swap.value || '0x0',
+      };
+      log(`  Swap calldata ready (target: ${swapCall.to})`);
+    } else {
+      log('  No tokens to swap — skipping');
+    }
+
+    // ─── STEP 3: Build mint calldata ─────────────────────────────────────
+
+    log('Building mint calldata...');
+    const newRange = computeNewRange({
+      currentTick: pool.tick,
+      tickSpacing: position.poolKey.tickSpacing,
+      widthMultiplier: rangeWidthMultiplier,
+    });
+    log(`  New range: [${newRange.tickLower}, ${newRange.tickUpper}]`);
+
+    // Estimate post-swap amounts
+    const postSwapAmount0 = outBelow ? (totalIn - swapAmount) : BigInt(swapAmount > 0n ? swapAmount.toString() : '0');
+    const postSwapAmount1 = outBelow ? BigInt(swapAmount > 0n ? swapAmount.toString() : '0') : (totalIn - swapAmount);
+
+    const mintApprovals = buildApprovalCalls(
+      [position.poolKey.currency0, position.poolKey.currency1],
+      config.contracts.positionManager,
+      config.contracts.permit2,
+    );
+
+    const mint = buildMintCalldata({
+      pool,
+      poolKey: position.poolKey,
+      config,
+      tickLower: newRange.tickLower,
+      tickUpper: newRange.tickUpper,
+      amount0: postSwapAmount0,
+      amount1: postSwapAmount1,
+      token0Decimals: 18,
+      token1Decimals: 18,
+      recipient: userEOA,
+      slippageBps: 200, // 2% slippage for batched execution
+    });
+    log(`  Mint calldata: ${mint.calldata.length} chars, liquidity: ${mint.liquidity}`);
+
+    // ─── STEP 4: Batch all calls into single Calibur SignedBatchedCall ──
+
+    log('Batching calls into Calibur signed batch...');
+
+    const batchCalls: CaliburCall[] = [];
+
+    // Burn
+    batchCalls.push({ to: burn.to, value: burn.value, data: burn.calldata });
+
+    // Swap approvals + swap
+    if (swapCall) {
+      const swapApprovals = buildApprovalCalls(
+        [tokenIn],
+        config.contracts.universalRouter,
+        config.contracts.permit2,
+      );
+      for (const a of swapApprovals) batchCalls.push(a);
+      batchCalls.push({
+        to: swapCall.to as Address,
+        value: BigInt(swapCall.value || '0'),
+        data: swapCall.data as Hex,
+      });
+    }
+
+    // Mint approvals + mint
+    for (const a of mintApprovals) batchCalls.push(a);
+    batchCalls.push({ to: mint.to, value: mint.value, data: mint.calldata });
+
+    log(`  Total calls in batch: ${batchCalls.length}`);
+
+    // Sign via Calibur
+    const { signedCall, wrappedSignature } = await buildSignedBatchedCall({
+      userEOA,
+      agentAccount,
+      calls: batchCalls,
+      config,
+      skipValidation: true,
+    });
+
+    log(`  Signed (nonce: ${signedCall.nonce}, deadline: ${signedCall.deadline})`);
+
+    // ─── STEP 5: Submit via Calibur execute ──────────────────────────────
+
+    log('Submitting via Calibur...');
+
+    const txHash = await submitBatchedCall({
+      userEOA,
+      signedCall,
+      wrappedSignature,
+      walletClient,
+      config,
+    });
+
+    log(`  TX submitted: ${txHash}`);
+
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+    const success = receipt.status === 'success';
+
+    log(`  ${success ? 'CONFIRMED' : 'REVERTED'} in block ${receipt.blockNumber} (gas: ${receipt.gasUsed})`);
+
+    return {
+      success,
+      tokenId: tokenIdStr,
+      txHash,
+      blockNumber: receipt.blockNumber,
+      newRange: success ? newRange : undefined,
+      error: success ? undefined : 'Transaction reverted',
+      details: {
+        callCount: batchCalls.length,
+        gasUsed: receipt.gasUsed.toString(),
+        burnEstimate: { amount0: burnEstimate.amount0.toString(), amount1: burnEstimate.amount1.toString() },
+        swapAmount: swapAmount.toString(),
+        mintLiquidity: mint.liquidity.toString(),
+      },
+    };
+  } catch (e: any) {
+    const errMsg = e.shortMessage || e.message;
+    log(`ERROR: ${errMsg}`);
+    return { success: false, tokenId: tokenIdStr, error: errMsg };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +371,6 @@ export async function preflight(params: {
   const { tokenId, userEOA, agentAddress, config, poolWhitelist } = params;
   const issues: string[] = [];
 
-  // Check position ownership
   try {
     const owner = await getPositionOwner(tokenId, config);
     if (owner.toLowerCase() !== userEOA.toLowerCase()) {
@@ -252,25 +380,20 @@ export async function preflight(params: {
     issues.push(`Cannot read position owner: ${e.message}`);
   }
 
-  // Check agent key registration
   try {
     const registered = await isKeyRegistered(userEOA, agentAddress, config);
     if (!registered) {
-      issues.push(`Agent key ${agentAddress} is not registered on user's Calibur delegation`);
+      issues.push(`Agent key not registered on user's Calibur delegation`);
     }
   } catch (e: any) {
-    // This will fail if user hasn't delegated to Calibur yet
-    issues.push(`Cannot check key registration (user may not be delegated to Calibur): ${e.message}`);
+    issues.push(`Cannot check key registration: ${e.message}`);
   }
 
-  // Check pool is whitelisted
   if (poolWhitelist) {
     try {
       const status = await checkPositionStatus(tokenId, config);
-      const poolValidation = poolWhitelist.validate(status.position.poolKey, `Position ${tokenId}`);
-      if (!poolValidation.valid) {
-        issues.push(poolValidation.reason);
-      }
+      const v = poolWhitelist.validate(status.position.poolKey, `Position ${tokenId}`);
+      if (!v.valid) issues.push(v.reason);
     } catch (e: any) {
       issues.push(`Cannot validate pool: ${e.message}`);
     }

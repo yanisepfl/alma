@@ -8,17 +8,20 @@ export interface PricePoint {
   token1Price: number;
 }
 
-const cache = new Map<string, { prices: PricePoint[]; ts: number }>();
-const CACHE_TTL = 60_000; // 1 min
+export type Duration = "HOUR" | "DAY" | "WEEK" | "MONTH" | "YEAR";
 
-export function usePoolPrices(poolId?: string) {
+const cache = new Map<string, { prices: PricePoint[]; ts: number }>();
+const CACHE_TTL = 60_000;
+
+export function usePoolPrices(poolId?: string, duration: Duration = "WEEK") {
   const [prices, setPrices] = useState<PricePoint[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     if (!poolId) return;
 
-    const cached = cache.get(poolId);
+    const key = `${poolId}:${duration}`;
+    const cached = cache.get(key);
     if (cached && Date.now() - cached.ts < CACHE_TTL) {
       setPrices(cached.prices);
       return;
@@ -27,12 +30,12 @@ export function usePoolPrices(poolId?: string) {
     let cancelled = false;
     setIsLoading(true);
 
-    fetch(`/api/pool-prices?poolId=${poolId}&duration=WEEK`)
+    fetch(`/api/pool-prices?poolId=${poolId}&duration=${duration}`)
       .then((r) => r.json())
       .then((json) => {
         if (cancelled) return;
         const data: PricePoint[] = json.data ?? [];
-        cache.set(poolId, { prices: data, ts: Date.now() });
+        cache.set(key, { prices: data, ts: Date.now() });
         setPrices(data);
       })
       .catch(() => {
@@ -45,7 +48,7 @@ export function usePoolPrices(poolId?: string) {
     return () => {
       cancelled = true;
     };
-  }, [poolId]);
+  }, [poolId, duration]);
 
   return { prices, isLoading };
 }

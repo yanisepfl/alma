@@ -238,3 +238,52 @@ export async function getPositionOwner(
   });
   return result as Address;
 }
+
+// ---------------------------------------------------------------------------
+// Read ERC20 / native ETH balances for a user
+// ---------------------------------------------------------------------------
+
+const erc20BalanceOfAbi = [
+  {
+    name: 'balanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
+
+export async function getTokenBalances(
+  userAddress: Address,
+  currency0: Address,
+  currency1: Address,
+  config: ChainConfig,
+): Promise<{ balance0: bigint; balance1: bigint }> {
+  const client = getPublicClient(config);
+
+  const isNative0 = currency0.toLowerCase() === ZERO_ADDRESS.toLowerCase();
+  const isNative1 = currency1.toLowerCase() === ZERO_ADDRESS.toLowerCase();
+
+  const [balance0, balance1] = await Promise.all([
+    isNative0
+      ? client.getBalance({ address: userAddress })
+      : client.readContract({
+          address: currency0,
+          abi: erc20BalanceOfAbi,
+          functionName: 'balanceOf',
+          args: [userAddress],
+        }).then((r) => r as bigint),
+    isNative1
+      ? client.getBalance({ address: userAddress })
+      : client.readContract({
+          address: currency1,
+          abi: erc20BalanceOfAbi,
+          functionName: 'balanceOf',
+          args: [userAddress],
+        }).then((r) => r as bigint),
+  ]);
+
+  return { balance0, balance1 };
+}

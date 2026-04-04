@@ -167,10 +167,17 @@ export function PositionCard({
   const { status: delegationStatus } = useDelegation();
   const isDelegated = delegationStatus === "delegated";
 
+  // Compute token ratio from amounts — use 100/0 for OOR positions
   let percent0 = 50;
-  if (m && m.positionSizeUSD > 0) {
-    const val0 = parseFloat(m.amount0) * m.token0PriceUSD;
-    percent0 = (val0 / m.positionSizeUSD) * 100;
+  if (m) {
+    if (m.positionSizeUSD > 0) {
+      const val0 = parseFloat(m.amount0) * m.token0PriceUSD;
+      percent0 = (val0 / m.positionSizeUSD) * 100;
+    } else if (parseFloat(m.amount0) > 0 && parseFloat(m.amount1) === 0) {
+      percent0 = 100;
+    } else if (parseFloat(m.amount0) === 0 && parseFloat(m.amount1) > 0) {
+      percent0 = 0;
+    }
   }
 
   return (
@@ -180,15 +187,21 @@ export function PositionCard({
     >
       {/* Delegation badge — top right */}
       <div className="absolute top-2.5 right-2.5">
-        <span
-          className={`rounded-md px-2.5 py-1 text-[10px] font-medium ${
-            isDelegated
-              ? "bg-green-500/15 text-green-500"
-              : "bg-red-500/15 text-red-500"
-          }`}
-        >
-          {isDelegated ? "Delegated" : "Not Delegated"}
-        </span>
+        {delegationStatus === "unknown" || delegationStatus === "checking" ? (
+          <span className="rounded-md px-2.5 py-1 text-[10px] font-medium bg-muted/30 text-transparent animate-pulse">
+            Checking...
+          </span>
+        ) : (
+          <span
+            className={`rounded-md px-2.5 py-1 text-[10px] font-medium ${
+              isDelegated
+                ? "bg-green-500/15 text-green-500"
+                : "bg-red-500/15 text-red-500"
+            }`}
+          >
+            {isDelegated ? "Delegated" : "Not Delegated"}
+          </span>
+        )}
       </div>
 
       {/* Top row: info + chart side by side */}
