@@ -31,7 +31,6 @@ import {
   buildMintCalldata,
   buildApprovalCalls,
   computeNewRange,
-  getDecimals,
   estimateBurnAmounts,
   type CaliburCall,
 } from './calldata-builders.js';
@@ -190,20 +189,10 @@ export async function executeRebalance(params: {
     const burnEstimate = await estimateBurnAmounts(position, pool, config);
     log(`  Estimated burn output: ${burnEstimate.amount0} token0, ${burnEstimate.amount1} token1`);
 
-    // Skip dust positions — not worth the gas
-    // Use decimals-aware thresholds: minimum ~$5 equivalent per token
-    const dec0 = getDecimals(position.poolKey.currency0, config);
-    const dec1 = getDecimals(position.poolKey.currency1, config);
-    // Minimum raw amounts: $5 worth at approximate prices
-    // ETH (18 dec): 0.003 ETH ≈ $5 | USDC (6 dec): 5e6 | cbBTC (8 dec): 6000 ≈ $5
-    const MIN_RAW_0 = 10n ** BigInt(dec0) / 300n; // ~$5 assuming token0 ≈ $1500
-    const MIN_RAW_1 = 10n ** BigInt(dec1) / 300n; // rough heuristic
-    if (burnEstimate.amount0 < MIN_RAW_0 && burnEstimate.amount1 < MIN_RAW_1) {
-      log(`  Dust position — burn too low (${burnEstimate.amount0} t0, ${burnEstimate.amount1} t1). Skipping.`);
-      return {
-        success: false, tokenId: tokenIdStr,
-        error: 'Position value too low to justify rebalance gas cost',
-      };
+    // Skip only truly empty positions
+    if (burnEstimate.amount0 === 0n && burnEstimate.amount1 === 0n) {
+      log('  Both burn amounts are zero. Skipping.');
+      return { success: false, tokenId: tokenIdStr, error: 'Nothing to rebalance' };
     }
 
     const burn = await buildBurnCalldata({
@@ -265,12 +254,6 @@ export async function executeRebalance(params: {
     // ─── STEP 3: Build mint calldata ─────────────────────────────────────
 
     log('Building mint calldata...');
-    const newRange = computeNewRange({
-      currentTick: pool.tick,
-      tickSpacing: position.poolKey.tickSpacing,
-      widthMultiplier: rangeWidthMultiplier,
-    });
-    log(`  New range: [${newRange.tickLower}, ${newRange.tickUpper}]`);
 
     // Estimate post-swap amounts
     const postSwapAmount0 = outBelow ? (totalIn - swapAmount) : BigInt(swapAmount > 0n ? swapAmount.toString() : '0');
@@ -282,18 +265,48 @@ export async function executeRebalance(params: {
       config.contracts.permit2,
     );
 
-    const mint = await buildMintCalldata({
-      pool,
-      poolKey: position.poolKey,
-      config,
-      tickLower: newRange.tickLower,
-      tickUpper: newRange.tickUpper,
-      amount0: postSwapAmount0,
-      amount1: postSwapAmount1,
-      recipient: userEOA,
-      deadlineTimestamp,
-      slippageBps: 2000, // 20% slippage for batched execution (amounts are estimates)
-    });
+    // Try progressively narrower ranges if amounts are too small for the default width
+    let mint: Awaited<ReturnType<typeof buildMintCalldata>> | null = null;
+    let newRange = { tickLower: 0, tickUpper: 0 };
+    for (const multiplier of [rangeWidthMultiplier, 5, 2, 1]) {
+      newRange = computeNewRange({
+        currentTick: pool.tick,
+        tickSpacing: position.poolKey.tickSpacing,
+        widthMultiplier: multiplier,
+      });
+      log(`  Trying range: [${newRange.tickLower}, ${newRange.tickUpper}] (width multiplier: ${multiplier})`);
+      try {
+        mint = await buildMintCalldata({
+          pool,
+          poolKey: position.poolKey,
+          config,
+          tickLower: newRange.tickLower,
+          tickUpper: newRange.tickUpper,
+          amount0: postSwapAmount0,
+          amount1: postSwapAmount1,
+          recipient: userEOA,
+          deadlineTimestamp,
+          slippageBps: 2000,
+        });
+        if (mint.liquidity !== '0') break;
+        log(`  Liquidity is 0, trying narrower range...`);
+        mint = null;
+      } catch (e: any) {
+        if (e.message?.includes('ZERO_LIQUIDITY')) {
+          log(`  ZERO_LIQUIDITY at multiplier ${multiplier}, trying narrower...`);
+          continue;
+        }
+        throw e;
+      }
+    }
+
+    if (!mint) {
+      log('  Could not create position with non-zero liquidity at any range width');
+      return {
+        success: false, tokenId: tokenIdStr,
+        error: 'Amounts too small to create position even at narrowest range',
+      };
+    }
     log(`  Mint calldata: ${mint.calldata.length} chars, liquidity: ${mint.liquidity}`);
 
     // ─── STEP 4: Batch all calls into single Calibur SignedBatchedCall ──
