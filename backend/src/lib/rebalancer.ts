@@ -215,6 +215,7 @@ export async function executeRebalance(params: {
     const swapAmount = totalIn / 2n;
 
     let swapCall: { to: string; data: string; value: string } | null = null;
+    let swapOutputAmount = 0n;
 
     if (swapAmount > 0n) {
       log(`  Direction: ${outBelow ? 'token0 -> token1' : 'token1 -> token0'}`);
@@ -231,7 +232,8 @@ export async function executeRebalance(params: {
         slippageTolerance: 0.5,
       });
 
-      log(`  Quote: ${quote.quote.input.amount} in -> ${quote.quote.output.amount} out`);
+      swapOutputAmount = BigInt(quote.quote.output.amount);
+      log(`  Quote: ${quote.quote.input.amount} in -> ${swapOutputAmount} out`);
       log(`  Route: ${quote.quote.routeString}`);
 
       // Use /swap (not /swap_7702) to get raw UniversalRouter calldata
@@ -256,8 +258,11 @@ export async function executeRebalance(params: {
     log('Building mint calldata...');
 
     // Estimate post-swap amounts
-    const postSwapAmount0 = outBelow ? (totalIn - swapAmount) : BigInt(swapAmount > 0n ? swapAmount.toString() : '0');
-    const postSwapAmount1 = outBelow ? BigInt(swapAmount > 0n ? swapAmount.toString() : '0') : (totalIn - swapAmount);
+    // outBelow: we hold token0, swap half to token1 → keep remaining token0 + received token1
+    // outAbove: we hold token1, swap half to token0 → received token0 + keep remaining token1
+    const postSwapAmount0 = outBelow ? (totalIn - swapAmount) : swapOutputAmount;
+    const postSwapAmount1 = outBelow ? swapOutputAmount : (totalIn - swapAmount);
+    log(`  Post-swap estimates: ${postSwapAmount0} token0, ${postSwapAmount1} token1`);
 
     const mintApprovals = buildApprovalCalls(
       [position.poolKey.currency0, position.poolKey.currency1],
