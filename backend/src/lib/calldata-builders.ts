@@ -11,7 +11,7 @@ import {
   type Hex,
   encodeFunctionData,
 } from 'viem';
-import { V4PositionManager, Pool as V4Pool, Position as V4Position } from '@uniswap/v4-sdk';
+import { V4PositionManager, V4PositionPlanner, Pool as V4Pool, Position as V4Position, toHex as sdkToHex } from '@uniswap/v4-sdk';
 import type { MintOptions, RemoveLiquidityOptions } from '@uniswap/v4-sdk';
 import { Token, Percent, Ether } from '@uniswap/sdk-core';
 import JSBI from 'jsbi';
@@ -146,30 +146,49 @@ export async function buildBurnCalldata(params: {
   deadlineTimestamp: bigint;
   slippageBps?: number;
 }): Promise<{ to: Address; value: bigint; calldata: Hex }> {
-  const { position, pool, config, deadlineTimestamp, slippageBps = 5000 } = params;
+  const { position, pool, config, recipient, deadlineTimestamp } = params;
 
   const v4Pool = await buildV4Pool(position, pool, config);
-  const v4Position = new V4Position({
-    pool: v4Pool,
-    tickLower: position.tickLower,
-    tickUpper: position.tickUpper,
-    liquidity: JSBI.BigInt(position.liquidity.toString()),
-  });
 
-  const removeOptions: RemoveLiquidityOptions = {
-    tokenId: Number(position.tokenId),
-    liquidityPercentage: new Percent(100, 100), // 100% remove
-    slippageTolerance: new Percent(slippageBps, 10_000),
-    deadline: deadlineTimestamp.toString(),
-    burnToken: false,
-  };
+  // Build SDK tokens for takePair/sweep
+  const dec0 = getDecimals(position.poolKey.currency0, config);
+  const dec1 = getDecimals(position.poolKey.currency1, config);
+  const sdkToken0 = new Token(config.chainId, position.poolKey.currency0, dec0, 'T0');
+  const sdkToken1 = new Token(config.chainId, position.poolKey.currency1, dec1, 'T1');
+  const [sorted0, sorted1] = sdkToken0.sortsBefore(sdkToken1)
+    ? [sdkToken0, sdkToken1] : [sdkToken1, sdkToken0];
 
-  const methodParams = V4PositionManager.removeCallParameters(v4Position, removeOptions);
+  // Use Planner approach (matching Alphix frontend pattern)
+  const planner = new V4PositionPlanner();
+  const tokenIdHex = sdkToHex(position.tokenId.toString());
+  const zero = JSBI.BigInt(0);
+
+  // Full burn — remove all liquidity and burn the NFT
+  planner.addBurn(tokenIdHex, zero, zero, '0x');
+
+  // Take both tokens back to recipient
+  planner.addTakePair(sorted0, sorted1, recipient);
+
+  // Sweep native ETH if pool involves it
+  if (hasNativeETH(position.poolKey)) {
+    const nativeToken = position.poolKey.currency0.toLowerCase() === ZERO_ADDRESS
+      ? sorted0.address.toLowerCase() === ZERO_ADDRESS ? sorted0 : sorted1
+      : sorted1.address.toLowerCase() === ZERO_ADDRESS ? sorted1 : sorted0;
+    planner.addSweep(nativeToken, recipient);
+  }
+
+  const deadline = deadlineTimestamp.toString();
+  const unlockData = planner.finalize();
+
+  const calldata = V4PositionManager.encodeModifyLiquidities(
+    unlockData as Hex,
+    deadline,
+  );
 
   return {
     to: config.contracts.positionManager as Address,
-    value: BigInt(methodParams.value || '0'),
-    calldata: methodParams.calldata as Hex,
+    value: 0n,
+    calldata: calldata as Hex,
   };
 }
 
