@@ -167,11 +167,35 @@ export function buildDelegationCalls(params: DelegationParams): Call[] {
   });
   calls.push({ to: userAddress, value: 0n, data: registerData });
 
-  // 2. Update key settings (self-call) — set expiry, no hook for now
-  // Hook setup skipped — deployed hook contract doesn't match expected ABI
-  // Settings: (expiry << 160) | hookAddress — with hook=0 (no restrictions)
+  // 2. Configure GuardedExecutorHook whitelist
+  // Only allows the agent to call specific selectors on specific targets
+  const whitelistEntries: { target: Address; selector: Hex }[] = [
+    { target: POSITION_MANAGER, selector: SELECTORS.modifyLiquidities },
+    { target: UNIVERSAL_ROUTER, selector: SELECTORS.universalRouterExecute },
+    { target: PERMIT2, selector: SELECTORS.permit2Approve },
+    ...KNOWN_TOKENS.concat(extraTokens).map((token) => ({
+      target: token,
+      selector: SELECTORS.erc20Approve,
+    })),
+  ];
+
+  for (const entry of whitelistEntries) {
+    const setCanExecuteData = encodeFunctionData({
+      abi: hookAbi,
+      functionName: "setCanExecute",
+      args: [keyHash, entry.target, entry.selector as `0x${string}`, true],
+    });
+    calls.push({
+      to: GUARDED_EXECUTOR_HOOK,
+      value: 0n,
+      data: setCanExecuteData,
+    });
+  }
+
+  // 3. Update key settings (self-call) — set expiry + hook
+  // Settings is packed uint256: (expiry << 160) | hookAddress
   const expiry = BigInt(Math.floor(Date.now() / 1000) + expirySeconds);
-  const packedSettings = expiry << 160n; // no hook = address(0)
+  const packedSettings = (expiry << 160n) | BigInt(GUARDED_EXECUTOR_HOOK);
   const updateData = encodeFunctionData({
     abi: caliburUpdateAbi,
     functionName: "update",

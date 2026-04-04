@@ -6,6 +6,8 @@ import {
   ActivityIcon,
   CheckCircleIcon,
   AlertCircleIcon,
+  RefreshCwIcon,
+  BarChart3Icon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EnrichedPosition } from "@/lib/positions/types";
@@ -13,6 +15,7 @@ import { usePoolPrices, type PricePoint, type Duration } from "@/hooks/use-pool-
 import { usePositionContext } from "@/hooks/use-position-context";
 import { cn } from "@/lib/utils";
 import { API_URL } from "@/lib/delegation/constants";
+import { useAccount } from "wagmi";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -30,6 +33,10 @@ function timeAgo(ts: number): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
+}
+
+function shortAddr(addr: string): string {
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
 // ── Price Chart (larger version) ─────────────────────────────────────────
@@ -132,7 +139,6 @@ function PriceChart({
     <div className="relative w-full h-full" ref={containerRef}
       onMouseMove={handleMouseMove} onMouseLeave={() => setHover(null)}
     >
-      {/* Range labels on right edge */}
       {showUpperRange && (
         <div className="absolute right-1 text-[9px] text-muted-foreground/40 pointer-events-none"
           style={{ top: `${rangeTopY}%`, transform: "translateY(-100%)" }}>
@@ -146,7 +152,6 @@ function PriceChart({
         </div>
       )}
 
-      {/* Tooltip */}
       {hover && (
         <>
           <div className="absolute top-0 pointer-events-none z-10"
@@ -158,7 +163,6 @@ function PriceChart({
               <div className="text-[9px] text-muted-foreground/50">{formatTime(hover.time)}</div>
             </div>
           </div>
-          {/* Dot positioned via CSS to stay circular */}
           <div
             className="absolute size-2 rounded-full bg-white pointer-events-none z-10"
             style={{ left: `${hover.x}%`, top: `${hoverY}%`, transform: "translate(-50%, -50%)" }}
@@ -167,7 +171,6 @@ function PriceChart({
       )}
 
       <svg viewBox="0 0 100 100" className="w-full h-full" preserveAspectRatio="none">
-        {/* Range band */}
         {(showLowerRange || showUpperRange) && (
           <rect
             x="0" y={showUpperRange ? rangeTopY : 0}
@@ -176,7 +179,6 @@ function PriceChart({
             fill="white" fillOpacity="0.03"
           />
         )}
-        {/* Range lines */}
         {showUpperRange && (
           <line x1="0" y1={rangeTopY} x2="100" y2={rangeTopY}
             stroke="white" strokeWidth="0.5" strokeOpacity="0.12" strokeDasharray="2,2"
@@ -187,13 +189,11 @@ function PriceChart({
             stroke="white" strokeWidth="0.5" strokeOpacity="0.12" strokeDasharray="2,2"
             vectorEffect="non-scaling-stroke" />
         )}
-        {/* Price line */}
         {segments.map((seg, i) => (
           <path key={i} d={seg.d} fill="none"
             stroke={seg.inRange ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.3)"}
             strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
         ))}
-        {/* Hover vertical line */}
         {hover && (
           <line x1={hover.x} y1="0" x2={hover.x} y2="100"
             stroke="white" strokeWidth="0.5" strokeOpacity="0.15"
@@ -214,22 +214,28 @@ const DURATIONS: { label: string; value: Duration }[] = [
 
 // ── Actions List ─────────────────────────────────────────────────────────
 
-interface Action {
+interface Activity {
+  id: string;
   type: string;
   status: string;
   summary: string;
   timestamp: number;
   tokenId?: string;
+  owner?: string;
+  txHashes?: string[];
 }
 
-function ActionsList({ tokenId }: { tokenId: string }) {
-  const [actions, setActions] = useState<Action[]>([]);
+function ActionsList({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?: string }) {
+  const [actions, setActions] = useState<Activity[]>([]);
 
   useEffect(() => {
     const fetchActions = () => {
-      fetch(`${API_URL}/api/actions`)
+      const params = new URLSearchParams({ limit: "20" });
+      if (ownerAddress) params.set("address", ownerAddress);
+      fetch(`${API_URL}/api/actions?${params}`)
         .then((r) => r.json())
-        .then((data: Action[]) => {
+        .then((data: Activity[]) => {
+          if (!Array.isArray(data)) return;
           const filtered = data.filter((a) => !a.tokenId || a.tokenId === tokenId);
           setActions(filtered.slice(0, 10));
         })
@@ -238,7 +244,7 @@ function ActionsList({ tokenId }: { tokenId: string }) {
     fetchActions();
     const interval = setInterval(fetchActions, 15_000);
     return () => clearInterval(interval);
-  }, [tokenId]);
+  }, [tokenId, ownerAddress]);
 
   if (actions.length === 0) {
     return (
@@ -250,9 +256,9 @@ function ActionsList({ tokenId }: { tokenId: string }) {
 
   return (
     <div className="space-y-2">
-      {actions.map((action, i) => (
+      {actions.map((action) => (
         <div
-          key={i}
+          key={action.id}
           className="flex items-start gap-3 rounded-lg border border-border/50 bg-card px-3 py-2.5"
         >
           <div className="mt-0.5">
@@ -266,8 +272,160 @@ function ActionsList({ tokenId }: { tokenId: string }) {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs text-foreground/80 leading-relaxed">{action.summary}</p>
-            <p className="text-[10px] text-muted-foreground/40 mt-0.5">{timeAgo(action.timestamp)}</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[10px] text-muted-foreground/40">{timeAgo(action.timestamp)}</span>
+              {action.txHashes?.[0] && (
+                <a
+                  href={`https://basescan.org/tx/${action.txHashes[0]}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-blue-400/60 hover:text-blue-400 transition-colors"
+                >
+                  tx
+                </a>
+              )}
+            </div>
           </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Rebalance History Table ──────────────────────────────────────────────
+
+interface RebalanceRecord {
+  id: string;
+  tokenId: string;
+  owner: string;
+  timestamp: number;
+  success: boolean;
+  txHash?: string;
+  newRange?: { tickLower: number; tickUpper: number };
+  error?: string;
+}
+
+function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
+  const [records, setRecords] = useState<RebalanceRecord[]>([]);
+
+  useEffect(() => {
+    const fetchRebalances = () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (ownerAddress) params.set("address", ownerAddress);
+      fetch(`${API_URL}/api/rebalances?${params}`)
+        .then((r) => r.json())
+        .then((data: RebalanceRecord[]) => {
+          if (Array.isArray(data)) setRecords(data);
+        })
+        .catch(() => {});
+    };
+    fetchRebalances();
+    const interval = setInterval(fetchRebalances, 30_000);
+    return () => clearInterval(interval);
+  }, [ownerAddress]);
+
+  if (records.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-20 text-xs text-muted-foreground/40">
+        No rebalances yet
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-muted-foreground/50 text-[10px] uppercase tracking-wider">
+            <th className="text-left py-2 px-2 font-medium">Position</th>
+            <th className="text-left py-2 px-2 font-medium">New Range</th>
+            <th className="text-left py-2 px-2 font-medium">Status</th>
+            <th className="text-left py-2 px-2 font-medium">Time</th>
+            <th className="text-left py-2 px-2 font-medium">TX</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border/30">
+          {records.map((r) => (
+            <tr key={r.id} className="hover:bg-card/50 transition-colors">
+              <td className="py-2 px-2 text-foreground/80">#{r.tokenId}</td>
+              <td className="py-2 px-2 text-foreground/60">
+                {r.newRange
+                  ? `[${r.newRange.tickLower}, ${r.newRange.tickUpper}]`
+                  : "—"}
+              </td>
+              <td className="py-2 px-2">
+                {r.success ? (
+                  <span className="inline-flex items-center gap-1 text-green-400">
+                    <CheckCircleIcon className="size-3" /> Success
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-red-400">
+                    <AlertCircleIcon className="size-3" /> Failed
+                  </span>
+                )}
+              </td>
+              <td className="py-2 px-2 text-muted-foreground/50">{timeAgo(r.timestamp)}</td>
+              <td className="py-2 px-2">
+                {r.txHash ? (
+                  <a
+                    href={`https://basescan.org/tx/${r.txHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-400/60 hover:text-blue-400 transition-colors"
+                  >
+                    {r.txHash.slice(0, 8)}...
+                  </a>
+                ) : (
+                  "—"
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── User Stats Card ──────────────────────────────────────────────────────
+
+interface UserStats {
+  positionCount: number;
+  totalRebalances: number;
+  successfulRebalances: number;
+  failedRebalances: number;
+  lastScanAt: number;
+}
+
+function StatsBar({ ownerAddress }: { ownerAddress?: string }) {
+  const [stats, setStats] = useState<UserStats | null>(null);
+
+  useEffect(() => {
+    if (!ownerAddress) return;
+    const fetchStats = () => {
+      fetch(`${API_URL}/api/stats/${ownerAddress}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => { if (data) setStats(data); })
+        .catch(() => {});
+    };
+    fetchStats();
+    const interval = setInterval(fetchStats, 30_000);
+    return () => clearInterval(interval);
+  }, [ownerAddress]);
+
+  if (!stats) return null;
+
+  return (
+    <div className="grid grid-cols-4 gap-3">
+      {[
+        { label: "Positions", value: stats.positionCount.toString() },
+        { label: "Rebalances", value: stats.totalRebalances.toString() },
+        { label: "Success", value: stats.totalRebalances > 0 ? `${Math.round((stats.successfulRebalances / stats.totalRebalances) * 100)}%` : "—" },
+        { label: "Last Scan", value: stats.lastScanAt > 0 ? timeAgo(stats.lastScanAt) : "—" },
+      ].map((s) => (
+        <div key={s.label} className="rounded-lg border border-border/40 bg-card/50 px-3 py-2 text-center">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">{s.label}</div>
+          <div className="mt-0.5 text-sm font-medium text-foreground/80">{s.value}</div>
         </div>
       ))}
     </div>
@@ -286,6 +444,8 @@ export function PositionDashboard({
   const [duration, setDuration] = useState<Duration>("WEEK");
   const { prices } = usePoolPrices(position.pool.poolId, duration);
   const { clearSelection } = usePositionContext();
+  const { address } = useAccount();
+  const [activeTab, setActiveTab] = useState<"activity" | "rebalances">("activity");
 
   return (
     <div className="mx-auto w-full max-w-4xl px-6 py-6">
@@ -314,6 +474,17 @@ export function PositionDashboard({
         <span className="text-[10px] text-muted-foreground/40">#{position.tokenId}</span>
       </div>
 
+      {/* User Stats Bar */}
+      {address && (
+        <motion.div
+          className="mb-4"
+          animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 4 }}
+          transition={{ duration: 0.2 }}
+        >
+          <StatsBar ownerAddress={address} />
+        </motion.div>
+      )}
+
       {/* Chart + Stats row */}
       <div className="grid grid-cols-5 gap-4 mb-6">
         {/* Chart — takes 3 columns */}
@@ -323,7 +494,6 @@ export function PositionDashboard({
           initial={{ opacity: 0, y: 6 }}
           transition={{ duration: 0.3 }}
         >
-          {/* Time selector row */}
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] text-muted-foreground/50">
               {position.token0Symbol} Price (in {position.token1Symbol})
@@ -412,15 +582,41 @@ export function PositionDashboard({
         </div>
       </div>
 
-      {/* Actions history */}
+      {/* Tabbed section: Activity + Rebalances */}
       <motion.div
         animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
         transition={{ delay: 0.25, duration: 0.3 }}
       >
-        <h3 className="text-xs font-medium text-muted-foreground/60 uppercase tracking-wider mb-3">
-          Agent Activity
-        </h3>
-        <ActionsList tokenId={position.tokenId} />
+        {/* Tab header */}
+        <div className="flex items-center gap-4 mb-3">
+          <button
+            onClick={() => setActiveTab("activity")}
+            className={cn(
+              "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
+              activeTab === "activity" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
+            )}
+          >
+            <ActivityIcon className="size-3" />
+            Activity
+          </button>
+          <button
+            onClick={() => setActiveTab("rebalances")}
+            className={cn(
+              "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
+              activeTab === "rebalances" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
+            )}
+          >
+            <RefreshCwIcon className="size-3" />
+            Rebalances
+          </button>
+        </div>
+
+        {/* Tab content */}
+        {activeTab === "activity" ? (
+          <ActionsList tokenId={position.tokenId} ownerAddress={address} />
+        ) : (
+          <RebalanceHistory ownerAddress={address} />
+        )}
       </motion.div>
     </div>
   );

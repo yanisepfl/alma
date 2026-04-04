@@ -231,9 +231,9 @@ export async function executeRebalance(params: {
       // Use /swap (not /swap_7702) to get raw UniversalRouter calldata
       // swap_7702 wraps in an execute(BatchedCall) targeting the EOA which
       // doesn't work inside our Calibur signed batch
-      const swapParams: any = { quote: quote.quote };
-      if (quote.permitData) swapParams.permitData = quote.permitData;
-      const swapResponse = await uniswapApi.swap(swapParams);
+      // Don't pass permitData — we handle approvals ourselves via Calibur batch.
+      // The /swap endpoint requires a signature alongside permitData.
+      const swapResponse = await uniswapApi.swap({ quote: quote.quote });
 
       swapCall = {
         to: swapResponse.swap.to,

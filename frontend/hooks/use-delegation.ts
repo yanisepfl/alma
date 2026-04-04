@@ -164,9 +164,10 @@ export function useDelegation() {
           );
         }
 
-        // Build delegation calls with address(0) for self-calls
+        // Build delegation calls — use actual user address for self-calls
+        // (address(0) only works with wallet_sendCalls, not with Calibur relay)
         const allCalls = buildDelegationCalls({
-          userAddress: "0x0000000000000000000000000000000000000000" as Address,
+          userAddress: address,
           agentAddress,
         });
 

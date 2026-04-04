@@ -128,7 +128,7 @@ app.post('/api/delegate', async (req, res) => {
       to: userAddress as Address,
       data: calldata,
       value: 0n,
-      gas: 500_000n,
+      gas: 1_000_000n,
     });
 
     console.log(`[delegate] TX submitted: ${txHash}`);
