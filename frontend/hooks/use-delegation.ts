@@ -5,6 +5,7 @@ import { useAccount, usePublicClient } from "wagmi";
 import type { Address, Hex } from "viem";
 import {
   CALIBUR_ADDRESS,
+  GUARDED_EXECUTOR_HOOK,
   caliburAbi,
   API_URL,
 } from "@/lib/delegation/constants";
@@ -102,8 +103,16 @@ export function useDelegation() {
           functionName: "getKeySettings",
           args: [keyHash],
         }) as bigint;
-        // If settings is 0, hook not set yet — still needs delegation step 2
-        setStatus(settings > 0n ? "delegated" : "not-delegated");
+        // Settings is packed: (expiry << 160) | hookAddress
+        // Verify the hook address matches the current GUARDED_EXECUTOR_HOOK
+        const hookInSettings = settings & ((1n << 160n) - 1n);
+        const expectedHook = BigInt(GUARDED_EXECUTOR_HOOK);
+        if (settings === 0n || hookInSettings !== expectedHook) {
+          // Hook not set, or set to old/wrong hook — needs re-delegation
+          setStatus("not-delegated");
+        } else {
+          setStatus("delegated");
+        }
       } catch {
         setStatus("not-delegated");
       }
