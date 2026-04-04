@@ -311,7 +311,7 @@ function tickToPrice(tick: number): string {
   return price.toPrecision(4);
 }
 
-function RebalanceHistory({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?: string }) {
+function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
   const [records, setRecords] = useState<RebalanceRecord[]>([]);
 
   useEffect(() => {
@@ -321,10 +321,7 @@ function RebalanceHistory({ tokenId, ownerAddress }: { tokenId: string; ownerAdd
       fetch(`${API_URL}/api/rebalances?${params}`)
         .then((r) => r.json())
         .then((data: RebalanceRecord[]) => {
-          if (Array.isArray(data)) {
-            const filtered = data.filter((r: RebalanceRecord) => r.tokenId === tokenId);
-            setRecords(filtered);
-          }
+          if (Array.isArray(data)) setRecords(data);
         })
         .catch(() => {});
     };
@@ -578,7 +575,7 @@ export function PositionDashboard({
             {activeTab === "activity" ? (
               <ActionsList tokenId={position.tokenId} ownerAddress={address} />
             ) : (
-              <RebalanceHistory tokenId={position.tokenId} ownerAddress={address} />
+              <RebalanceHistory ownerAddress={address} />
             )}
           </motion.div>
         </>

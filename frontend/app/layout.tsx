@@ -9,6 +9,9 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Alma",
   description: "Autonomous liquidity management agent",
+  icons: {
+    icon: "/logo.png",
+  },
 };
 
 export const viewport = {

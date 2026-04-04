@@ -71,11 +71,11 @@ export function useSettings(walletAddress?: string) {
   return { settings, update };
 }
 
-/** Range width multiplier based on risk profile */
+/** Range width multiplier based on risk profile (half-width = tickSpacing * multiplier) */
 export function getRangeMultiplier(risk: RiskProfile): number {
   switch (risk) {
-    case "low": return 20;    // wide range, less IL, fewer rebalances
-    case "medium": return 10; // balanced
-    case "high": return 5;    // tight range, more fees, more rebalances
+    case "low": return 30;    // +/- 20% range
+    case "medium": return 16; // +/- 10% range
+    case "high": return 2;    // +/- 1% range
   }
 }

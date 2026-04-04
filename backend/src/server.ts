@@ -319,9 +319,9 @@ app.get('/api/settings/:address', async (req, res) => {
 
 function getRangeMultiplier(risk: string): number {
   switch (risk) {
-    case 'low': return 20;
-    case 'high': return 5;
-    default: return 10;
+    case 'low': return 30;    // +/- 20% range
+    case 'high': return 2;    // +/- 1% range
+    default: return 16;       // +/- 10% range
   }
 }
 

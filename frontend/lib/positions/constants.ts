@@ -75,12 +75,12 @@ export const TOKEN_SYMBOLS: Record<string, string> = {
 };
 
 export const QUIRKY_MESSAGES = [
-  "Check your ranges!",
-  "Ready to rebalance?",
-  "How's your position?",
-  "Optimize your yield!",
-  "What's the move?",
-  "Let's get to work!",
+  "Watching your positions...",
+  "Markets never sleep, neither do I.",
+  "Your liquidity, optimized.",
+  "Keeping your ranges tight.",
+  "Fees are accumulating nicely.",
+  "All systems operational.",
 ];
 
 export const GENERAL_SUGGESTIONS = [

@@ -14,9 +14,9 @@ import { useSettings, type RiskProfile } from "@/hooks/use-settings";
 import { cn } from "@/lib/utils";
 
 const RISK_OPTIONS: { value: RiskProfile; label: string; desc: string }[] = [
-  { value: "low", label: "Conservative", desc: "+/- 12% range" },
-  { value: "medium", label: "Balanced", desc: "+/- 6% range" },
-  { value: "high", label: "Aggressive", desc: "+/- 3% range" },
+  { value: "low", label: "Conservative", desc: "+/- 20% range" },
+  { value: "medium", label: "Balanced", desc: "+/- 10% range" },
+  { value: "high", label: "Aggressive", desc: "+/- 1% range" },
 ];
 
 const COMING_SOON_OPTIONS = [

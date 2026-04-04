@@ -55,21 +55,20 @@ export function PositionsGrid() {
   const isDelegated = delegationStatus === "delegated";
 
   useEffect(() => {
-    if (!address) {
+    if (!address || positions.length === 0) {
       setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
       return;
     }
 
+    // First try to get rebalance info from backend
     fetch(`${API_URL}/api/actions?address=${address}`)
       .then((r) => r.ok ? r.json() : [])
       .then((data) => {
         const actions = Array.isArray(data) ? data : data?.actions ?? [];
         const today = Date.now() - 24 * 60 * 60 * 1000;
-        const todayActions = actions.filter((a: any) => a.timestamp > today);
-        const rebalances = todayActions.filter(
-          (a: any) => a.type === "rebalance" && a.status === "completed"
+        const rebalances = actions.filter(
+          (a: any) => a.timestamp > today && a.type === "rebalance" && a.status === "completed"
         );
-        // Deduplicate by txHash to avoid double-counting
         const seen = new Set<string>();
         const uniqueRebalances = rebalances.filter((a: any) => {
           const key = a.txHashes?.[0] || a.id;
@@ -77,25 +76,31 @@ export function PositionsGrid() {
           seen.add(key);
           return true;
         });
-        const uniquePositions = new Set(uniqueRebalances.map((a: any) => a.tokenId).filter(Boolean));
 
         if (uniqueRebalances.length > 0) {
+          const uniquePositions = new Set(uniqueRebalances.map((a: any) => a.tokenId).filter(Boolean));
           setMessage(
-            `I rebalanced ${uniquePositions.size} position${uniquePositions.size !== 1 ? "s" : ""} ${uniqueRebalances.length} time${uniqueRebalances.length !== 1 ? "s" : ""} today!`
+            `Rebalanced ${uniquePositions.size} position${uniquePositions.size !== 1 ? "s" : ""} ${uniqueRebalances.length} time${uniqueRebalances.length !== 1 ? "s" : ""} today.`
           );
         } else {
-          const meaningful = todayActions.filter((a: any) => a.type !== "monitor");
-          if (meaningful.length > 0) {
-            setMessage(`I monitored ${meaningful.length} position${meaningful.length !== 1 ? "s" : ""} today!`);
+          // Fall back to position-aware messages
+          const oor = positions.filter((p) => !p.isInRange);
+          if (oor.length > 0) {
+            setMessage(`${oor.length} of ${positions.length} position${positions.length !== 1 ? "s" : ""} out of range. On it.`);
           } else {
-            setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
+            setMessage(`All ${positions.length} position${positions.length !== 1 ? "s" : ""} in range. Looking good.`);
           }
         }
       })
       .catch(() => {
-        setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
+        const oor = positions.filter((p) => !p.isInRange);
+        if (oor.length > 0) {
+          setMessage(`${oor.length} of ${positions.length} position${positions.length !== 1 ? "s" : ""} out of range. On it.`);
+        } else {
+          setMessage(`All ${positions.length} position${positions.length !== 1 ? "s" : ""} in range. Looking good.`);
+        }
       });
-  }, [address]);
+  }, [address, positions]);
 
   const totalPages = Math.max(1, Math.ceil((positions.length + 1) / PAGE_SIZE));
   const startIdx = page * PAGE_SIZE;
