@@ -78,7 +78,19 @@ export function serializePosition(position: {
   percentOutOfRange: number;
   token0Symbol: string;
   token1Symbol: string;
+  metrics?: {
+    amount0: string;
+    amount1: string;
+    positionSizeUSD: number;
+    feesEarnedUSD: number;
+    feePercent: string;
+    currentPrice: string;
+    minPrice: string;
+    maxPrice: string;
+    apyEstimate: number | null;
+  };
 }) {
+  const m = position.metrics;
   return {
     tokenId: position.tokenId,
     token0: position.token0Symbol,
@@ -91,5 +103,16 @@ export function serializePosition(position: {
     percentOutOfRange: position.percentOutOfRange,
     fee: position.poolKey.fee,
     tickSpacing: position.poolKey.tickSpacing,
+    ...(m && {
+      positionSizeUSD: m.positionSizeUSD,
+      feesEarnedUSD: m.feesEarnedUSD,
+      feePercent: m.feePercent,
+      currentPrice: m.currentPrice,
+      minPrice: m.minPrice,
+      maxPrice: m.maxPrice,
+      amount0: m.amount0,
+      amount1: m.amount1,
+      apyEstimate: m.apyEstimate,
+    }),
   };
 }

@@ -1,0 +1,39 @@
+{
+  "name": "@alphix/rebalance-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headless auto-rebalancer for Alphix CL positions via Calibur 7702 delegation",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "spike:check-delegation": "tsx src/spike/check-delegation.ts",
+    "spike:quote": "tsx src/spike/quote.ts",
+    "spike:monitor": "tsx src/spike/monitor-position.ts",
+    "spike:calibur-batch": "tsx src/spike/calibur-batch.ts",
+    "spike:full-rebalance": "tsx src/spike/full-rebalance.ts",
+    "server": "tsx src/server.ts",
+    "server:watch": "tsx watch src/server.ts"
+  },
+  "dependencies": {
+    "@uniswap/permit2-sdk": "^1.3.0",
+    "@uniswap/sdk-core": "7.9.0",
+    "@uniswap/universal-router-sdk": "4.19.5",
+    "@uniswap/v3-sdk": "^3.20.0",
+    "@uniswap/v4-sdk": "1.21.2",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "jsbi": "^3.2.5",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

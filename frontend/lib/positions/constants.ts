@@ -1,6 +1,7 @@
-export const POSITION_MANAGER = "0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4" as const;
-export const STATE_VIEW = "0xe1dd9c3fa50edb962e442f60dfbc432e24537e4c" as const;
-export const CHAIN_ID = 11155111; // Sepolia
+// Base Mainnet — Uniswap V4
+export const POSITION_MANAGER = "0x7c5f5a4bbd8fd63184577525326123b519429bdc" as const;
+export const STATE_VIEW = "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71" as const;
+export const CHAIN_ID = 8453; // Base
 
 export const POSITION_MANAGER_ABI = [
   {

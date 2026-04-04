@@ -11,7 +11,6 @@ import {
   useState,
 } from "react";
 import { useAccount, usePublicClient } from "wagmi";
-import { parseAbiItem } from "viem";
 import type { EnrichedPosition, PoolKey } from "@/lib/positions/types";
 import {
   POSITION_MANAGER,
@@ -25,13 +24,16 @@ import {
   decodePositionInfo,
   getTokenSymbol,
 } from "@/lib/positions/utils";
+import { enrichPosition } from "@/lib/positions/enrich";
+import { discoverPositions, clearDiscoveryCache } from "@/lib/positions/discover";
 
 type PositionContextValue = {
   positions: EnrichedPosition[];
   selectedPosition: EnrichedPosition | null;
   selectPosition: (tokenId: string) => void;
   clearSelection: () => void;
-  loadPosition: (tokenId: string) => Promise<void>;
+  loadPosition: (tokenId: string, autoSelect?: boolean) => Promise<void>;
+  refresh: () => void;
   isLoading: boolean;
   error: string | null;
 };
@@ -52,15 +54,14 @@ export function PositionProvider({ children }: { children: ReactNode }) {
   );
 
   const loadPosition = useCallback(
-    async (tokenId: string) => {
+    async (tokenId: string, autoSelect = true) => {
       if (!publicClient) {
         setError("No RPC client available");
         return;
       }
 
-      // Don't reload if already loaded
       if (positions.find((p) => p.tokenId === tokenId)) {
-        setSelectedId(tokenId);
+        if (autoSelect) setSelectedId(tokenId);
         return;
       }
 
@@ -70,7 +71,6 @@ export function PositionProvider({ children }: { children: ReactNode }) {
       try {
         const tokenIdBigInt = BigInt(tokenId);
 
-        // Batch: get position info + liquidity
         const [infoResult, liquidityResult] = await publicClient.multicall({
           contracts: [
             {
@@ -93,7 +93,6 @@ export function PositionProvider({ children }: { children: ReactNode }) {
         const liquidity = liquidityResult as bigint;
         const { tickLower, tickUpper } = decodePositionInfo(packedInfo);
 
-        // Compute pool ID and fetch pool state
         const poolId = computePoolId(poolKey);
 
         const [slot0Result, poolLiqResult] = await publicClient.multicall({
@@ -145,10 +144,23 @@ export function PositionProvider({ children }: { children: ReactNode }) {
           }
           return [...prev, enriched];
         });
-        setSelectedId(tokenId);
+        if (autoSelect) setSelectedId(tokenId);
+
+        // Enrich with metrics in background
+        enrichPosition(enriched, publicClient)
+          .then((metrics) => {
+            setPositions((prev) =>
+              prev.map((p) =>
+                p.tokenId === tokenId
+                  ? { ...p, metrics }
+                  : p
+              )
+            );
+          })
+          .catch((err) => console.warn("Metrics enrichment failed:", err));
       } catch (err) {
         console.error("Failed to load position:", err);
-        setError("Failed to load position. Check the token ID.");
+        setError("Failed to load position.");
       } finally {
         setIsLoading(false);
       }
@@ -156,68 +168,39 @@ export function PositionProvider({ children }: { children: ReactNode }) {
     [publicClient, positions]
   );
 
-  // Auto-discover positions when wallet connects
+  // Auto-discover positions via subgraph (instant)
   const hasDiscovered = useRef(false);
   useEffect(() => {
     if (!address || !publicClient || hasDiscovered.current) return;
     hasDiscovered.current = true;
 
     (async () => {
+      setIsLoading(true);
       try {
-        // Query ERC-721 Transfer events TO this address (last ~100k blocks)
-        const transferEvent = parseAbiItem(
-          "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
-        );
-        const currentBlock = await publicClient.getBlockNumber();
-        const fromBlock = currentBlock > 100000n ? currentBlock - 100000n : 0n;
-        const logs = await publicClient.getLogs({
-          address: POSITION_MANAGER,
-          event: transferEvent,
-          args: { to: address },
-          fromBlock,
-          toBlock: "latest",
-        });
+        const discovered = await discoverPositions(address);
 
-        // Get unique token IDs received
-        const received = new Set(
-          logs.map((l) => l.args.tokenId!.toString())
-        );
+        if (discovered.length === 0) {
+          setIsLoading(false);
+          return;
+        }
 
-        // Check which ones are still owned by the user
-        if (received.size === 0) return;
-
-        const tokenIds = [...received];
-        const ownerCalls = tokenIds.map((id) => ({
-          address: POSITION_MANAGER as `0x${string}`,
-          abi: POSITION_MANAGER_ABI,
-          functionName: "ownerOf" as const,
-          args: [BigInt(id)] as const,
-        }));
-
-        const owners = await publicClient.multicall({
-          contracts: ownerCalls,
-          allowFailure: true,
-        });
-
-        const ownedIds = tokenIds.filter((_, i) => {
-          const result = owners[i];
-          return (
-            result.status === "success" &&
-            (result.result as string).toLowerCase() === address.toLowerCase()
-          );
-        });
-
-        // Load each owned position
-        for (const id of ownedIds) {
-          await loadPosition(id);
+        // Load each position on-chain (don't auto-select)
+        for (const pos of discovered) {
+          try {
+            await loadPosition(pos.tokenId, false);
+          } catch {
+            // Skip positions that fail
+          }
         }
       } catch (err) {
         console.error("Failed to discover positions:", err);
+      } finally {
+        setIsLoading(false);
       }
     })();
   }, [address, publicClient, loadPosition]);
 
-  // Reset when wallet disconnects
+  // Reset on disconnect
   useEffect(() => {
     if (!address) {
       hasDiscovered.current = false;
@@ -234,6 +217,27 @@ export function PositionProvider({ children }: { children: ReactNode }) {
     setSelectedId(null);
   }, []);
 
+  const refresh = useCallback(() => {
+    clearDiscoveryCache();
+    hasDiscovered.current = false;
+    setPositions([]);
+    setSelectedId(null);
+    // Re-trigger discovery
+    if (address && publicClient) {
+      setIsLoading(true);
+      discoverPositions(address, true)
+        .then(async (discovered) => {
+          for (const pos of discovered) {
+            try {
+              await loadPosition(pos.tokenId, false);
+            } catch {}
+          }
+        })
+        .catch((err) => console.error("Refresh failed:", err))
+        .finally(() => setIsLoading(false));
+    }
+  }, [address, publicClient, loadPosition]);
+
   const value = useMemo<PositionContextValue>(
     () => ({
       positions,
@@ -241,10 +245,11 @@ export function PositionProvider({ children }: { children: ReactNode }) {
       selectPosition,
       clearSelection,
       loadPosition,
+      refresh,
       isLoading,
       error,
     }),
-    [positions, selectedPosition, selectPosition, clearSelection, loadPosition, isLoading, error]
+    [positions, selectedPosition, selectPosition, clearSelection, loadPosition, refresh, isLoading, error]
   );
 
   return (

@@ -1,0 +1,38 @@
+# Compiler files
+cache/
+out/
+
+# Ignores development (and goerli) broadcast logs
+!/broadcast
+/broadcast/*/31337/
+/broadcast/*/5/
+/broadcast/**/dry-run/
+
+# Docs
+docs/
+
+# Dotenv file
+.env
+
+# Node modules
+node_modules/
+
+# Coverage files
+lcov.info
+coverage/
+
+# Slither reports
+slither-report.*
+slither-out/
+
+# Scripts documentation
+script/alphix/DEPLOYMENT.md
+
+# Broadcast files
+broadcast/
+
+# Claude Code files
+.claude/
+
+# VSCode settings
+.vscode/

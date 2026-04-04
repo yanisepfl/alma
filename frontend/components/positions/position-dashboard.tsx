@@ -3,18 +3,25 @@
 import { motion } from "framer-motion";
 import {
   ArrowRightLeftIcon,
-  CoinsIcon,
   HandCoinsIcon,
   InfoIcon,
+  ShieldCheckIcon,
   TrendingUpIcon,
-  ZapIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { EnrichedPosition } from "@/lib/positions/types";
 import { QUIRKY_MESSAGES } from "@/lib/positions/constants";
-import { formatLiquidity } from "@/lib/positions/utils";
 import { cn } from "@/lib/utils";
 import { StatCard, TickRangeVisual } from "./stat-card";
+import { DelegationStepper } from "@/components/delegation/delegation-stepper";
+
+function formatUSD(value: number): string {
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  if (value > 0) return `$${value.toFixed(4)}`;
+  return "$0.00";
+}
 
 export function PositionDashboard({
   position,
@@ -24,6 +31,8 @@ export function PositionDashboard({
   onSuggestedAction?: (text: string) => void;
 }) {
   const [message, setMessage] = useState("");
+  const [delegateOpen, setDelegateOpen] = useState(false);
+  const m = position.metrics;
 
   useEffect(() => {
     setMessage(
@@ -32,6 +41,12 @@ export function PositionDashboard({
   }, [position.tokenId]);
 
   const actions = [
+    {
+      text: "Delegate to ALMA",
+      icon: ShieldCheckIcon,
+      isAction: true,
+      isDelegation: true,
+    },
     {
       text: "Rebalance my position",
       icon: ArrowRightLeftIcon,
@@ -45,11 +60,6 @@ export function PositionDashboard({
     {
       text: "What's my estimated APY?",
       icon: TrendingUpIcon,
-      isAction: false,
-    },
-    {
-      text: "Explain my impermanent loss",
-      icon: InfoIcon,
       isAction: false,
     },
   ];
@@ -92,20 +102,20 @@ export function PositionDashboard({
           {position.token0Symbol} / {position.token1Symbol}
         </h2>
         <div className="flex items-center gap-1.5">
-          <span
-            className={cn(
-              "size-2 rounded-full animate-pulse",
-              position.isInRange
-                ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]"
-                : "bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.7)]"
-            )}
-          />
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+            <circle
+              cx="4" cy="4" r="4" fill="currentColor" fillOpacity="0.4"
+              className={position.isInRange ? "text-green-500" : "text-red-500"}
+            />
+            <circle
+              cx="4" cy="4" r="2" fill="currentColor"
+              className={position.isInRange ? "text-green-500" : "text-red-500"}
+            />
+          </svg>
           <span
             className={cn(
               "text-xs font-medium",
-              position.isInRange
-                ? "text-emerald-500"
-                : "text-red-400"
+              position.isInRange ? "text-green-500" : "text-red-400"
             )}
           >
             {position.isInRange ? "In Range" : "Out of Range"}
@@ -122,31 +132,56 @@ export function PositionDashboard({
           tickLower={position.tickLower}
           tickUpper={position.tickUpper}
           currentTick={position.pool.currentTick}
+          minPrice={m?.minPrice}
+          maxPrice={m?.maxPrice}
+          currentPrice={m?.currentPrice}
         />
 
         <StatCard
           label="Position Size"
-          value={formatLiquidity(position.liquidity)}
+          value={m ? formatUSD(m.positionSizeUSD) : "Loading..."}
+          sub={
+            m
+              ? `${parseFloat(m.amount0).toFixed(4)} ${position.token0Symbol} + ${parseFloat(m.amount1).toFixed(4)} ${position.token1Symbol}`
+              : undefined
+          }
         />
 
         <StatCard
-          label="TVL"
-          value="—"
-          sub="Connect to fetch prices"
+          label="Fees Earned"
+          value={m ? formatUSD(m.feesEarnedUSD) : "Loading..."}
+          sub={
+            m
+              ? `${parseFloat(m.fee0).toFixed(6)} ${position.token0Symbol} + ${parseFloat(m.fee1).toFixed(6)} ${position.token1Symbol}`
+              : undefined
+          }
         />
 
         <StatCard
           label="Fee"
-          value={`${(position.poolKey.fee / 10000).toFixed(2)}%`}
-          sub={`Spacing: ${position.poolKey.tickSpacing}`}
+          value={m?.feePercent ?? "Loading..."}
         />
 
-        <StatCard label="Fees Earned" value="—" sub="Pending calculation" />
+        <StatCard
+          label="Current Price"
+          value={m ? `${parseFloat(m.currentPrice).toFixed(6)}` : "Loading..."}
+          sub={m ? `${position.token1Symbol} per ${position.token0Symbol}` : undefined}
+        />
 
-        <StatCard label="APY (est.)" value="—" sub="Based on 7d volume" />
+        <StatCard
+          label="APY (est.)"
+          value={
+            m?.apyEstimate != null
+              ? `${m.apyEstimate.toFixed(2)}%`
+              : m
+                ? "—"
+                : "Loading..."
+          }
+          sub={m?.apyEstimate != null ? "Based on accumulated fees" : undefined}
+        />
       </div>
 
-      {/* Suggested actions — differentiate actions vs questions */}
+      {/* Suggested actions */}
       <div className="grid grid-cols-2 gap-2.5">
         {actions.map((action, i) => (
           <motion.button
@@ -158,12 +193,20 @@ export function PositionDashboard({
               duration: 0.3,
               ease: [0.22, 1, 0.36, 1],
             }}
-            onClick={() => onSuggestedAction?.(action.text)}
+            onClick={() => {
+              if (action.isDelegation) {
+                setDelegateOpen(true);
+              } else {
+                onSuggestedAction?.(action.text);
+              }
+            }}
             className={cn(
               "flex items-center gap-2.5 rounded-xl border px-4 py-3 text-left text-[13px] transition-all duration-150 cursor-pointer",
-              action.isAction
-                ? "border-foreground/15 bg-foreground/[0.03] text-foreground/80 hover:bg-foreground/[0.07] hover:text-foreground"
-                : "border-border/40 bg-transparent text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+              action.isDelegation
+                ? "border-green-500/20 bg-green-500/[0.04] text-green-600 dark:text-green-400 hover:bg-green-500/[0.08] hover:border-green-500/30 col-span-2"
+                : action.isAction
+                  ? "border-foreground/15 bg-foreground/[0.03] text-foreground/80 hover:bg-foreground/[0.07] hover:text-foreground"
+                  : "border-border/40 bg-transparent text-muted-foreground hover:bg-muted/30 hover:text-foreground"
             )}
           >
             <action.icon className="size-3.5 shrink-0 opacity-50" />
@@ -171,6 +214,12 @@ export function PositionDashboard({
           </motion.button>
         ))}
       </div>
+
+      <DelegationStepper
+        open={delegateOpen}
+        onOpenChange={setDelegateOpen}
+        mode={[position.tokenId]}
+      />
     </div>
   );
 }
