@@ -12,8 +12,9 @@ contract HookDeployer {
             GuardedExecutorHook hook = new GuardedExecutorHook();
             address addr = address(hook);
 
-            // Bit 3 (0x08) = BEFORE_EXECUTE flag in Calibur's HooksLib
-            if (uint160(addr) & 0x08 == 0x08) {
+            // Only bit 3 (BEFORE_EXECUTE) must be set; all other hook bits (0-2, 4) must be clear
+            // 0x1F masks all 5 hook flag bits; we require exactly 0x08
+            if (uint160(addr) & 0x1F == 0x08) {
                 emit Deployed(addr, i);
                 return addr;
             }
@@ -29,7 +30,7 @@ contract DeployHook is Script {
         HookDeployer deployer = new HookDeployer();
         console.log("Deployer:", address(deployer));
 
-        address hookAddr = deployer.deployUntilFlag(50);
+        address hookAddr = deployer.deployUntilFlag(500);
         console.log("Hook deployed at:", hookAddr);
         // forge-lint: disable-next-line(unsafe-typecast)
         console.log("Last byte:", uint8(uint160(hookAddr)));
