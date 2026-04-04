@@ -14,9 +14,14 @@ import { useSettings, type RiskProfile } from "@/hooks/use-settings";
 import { cn } from "@/lib/utils";
 
 const RISK_OPTIONS: { value: RiskProfile; label: string; desc: string }[] = [
-  { value: "low", label: "Conservative", desc: "Wide ranges, fewer rebalances, lower IL risk" },
-  { value: "medium", label: "Balanced", desc: "Moderate ranges, balanced fee capture" },
-  { value: "high", label: "Aggressive", desc: "Tight ranges, max fees, frequent rebalances" },
+  { value: "low", label: "Conservative", desc: "+/- 12% range" },
+  { value: "medium", label: "Balanced", desc: "+/- 6% range" },
+  { value: "high", label: "Aggressive", desc: "+/- 3% range" },
+];
+
+const COMING_SOON_OPTIONS = [
+  { label: "Volatility Adaptive", desc: "Adjusts range based on pool volatility" },
+  { label: "Autonomous Agent", desc: "AI-optimized range and timing" },
 ];
 
 const SLIPPAGE_OPTIONS = [10, 30, 50, 100]; // bps
@@ -68,6 +73,22 @@ export function SettingsButton() {
                   </button>
                 ))}
               </div>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                {COMING_SOON_OPTIONS.map((opt) => (
+                  <div
+                    key={opt.label}
+                    className="rounded-lg border border-border/40 px-3 py-2.5 text-left opacity-40 cursor-not-allowed relative"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <div className="text-xs font-medium">{opt.label}</div>
+                      <span className="text-[9px] font-medium uppercase tracking-wider bg-muted/60 text-muted-foreground/60 px-1.5 py-0.5 rounded-full">
+                        Soon
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground/50 mt-0.5">{opt.desc}</div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Max Slippage */}
@@ -91,30 +112,6 @@ export function SettingsButton() {
                   </button>
                 ))}
               </div>
-            </div>
-
-            {/* Auto-rebalance toggle */}
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs font-medium">Auto-rebalance</div>
-                <div className="text-[10px] text-muted-foreground/50">
-                  Agent automatically rebalances out-of-range positions
-                </div>
-              </div>
-              <button
-                onClick={() => update({ autoRebalance: !settings.autoRebalance })}
-                className={cn(
-                  "relative w-9 h-5 rounded-full transition-colors cursor-pointer",
-                  settings.autoRebalance ? "bg-green-500/80" : "bg-muted/60"
-                )}
-              >
-                <div
-                  className={cn(
-                    "absolute top-0.5 size-4 rounded-full bg-white transition-transform",
-                    settings.autoRebalance ? "translate-x-4" : "translate-x-0.5"
-                  )}
-                />
-              </button>
             </div>
           </div>
         </DialogContent>

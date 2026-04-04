@@ -6,8 +6,6 @@ import {
   ActivityIcon,
   CheckCircleIcon,
   AlertCircleIcon,
-  RefreshCwIcon,
-  BarChart3Icon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EnrichedPosition } from "@/lib/positions/types";
@@ -236,7 +234,7 @@ function ActionsList({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?
         .then((r) => r.json())
         .then((data: Activity[]) => {
           if (!Array.isArray(data)) return;
-          const filtered = data.filter((a) => !a.tokenId || a.tokenId === tokenId);
+          const filtered = data.filter((a) => a.tokenId === tokenId);
           setActions(filtered.slice(0, 10));
         })
         .catch(() => {});
@@ -305,7 +303,15 @@ interface RebalanceRecord {
   error?: string;
 }
 
-function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
+function tickToPrice(tick: number): string {
+  const price = Math.pow(1.0001, tick);
+  if (price >= 0.01 && price <= 100_000) {
+    return `$${price.toFixed(2)}`;
+  }
+  return price.toPrecision(4);
+}
+
+function RebalanceHistory({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?: string }) {
   const [records, setRecords] = useState<RebalanceRecord[]>([]);
 
   useEffect(() => {
@@ -315,14 +321,17 @@ function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
       fetch(`${API_URL}/api/rebalances?${params}`)
         .then((r) => r.json())
         .then((data: RebalanceRecord[]) => {
-          if (Array.isArray(data)) setRecords(data);
+          if (Array.isArray(data)) {
+            const filtered = data.filter((r: RebalanceRecord) => r.tokenId === tokenId);
+            setRecords(filtered);
+          }
         })
         .catch(() => {});
     };
     fetchRebalances();
     const interval = setInterval(fetchRebalances, 30_000);
     return () => clearInterval(interval);
-  }, [ownerAddress]);
+  }, [tokenId, ownerAddress]);
 
   if (records.length === 0) {
     return (
@@ -338,7 +347,7 @@ function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
         <thead>
           <tr className="text-muted-foreground/50 text-[10px] uppercase tracking-wider">
             <th className="text-left py-2 px-2 font-medium">Position</th>
-            <th className="text-left py-2 px-2 font-medium">New Range</th>
+            <th className="text-left py-2 px-2 font-medium">New Range ($)</th>
             <th className="text-left py-2 px-2 font-medium">Status</th>
             <th className="text-left py-2 px-2 font-medium">Time</th>
             <th className="text-left py-2 px-2 font-medium">TX</th>
@@ -350,7 +359,7 @@ function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
               <td className="py-2 px-2 text-foreground/80">#{r.tokenId}</td>
               <td className="py-2 px-2 text-foreground/60">
                 {r.newRange
-                  ? `[${r.newRange.tickLower}, ${r.newRange.tickUpper}]`
+                  ? `${tickToPrice(r.newRange.tickLower)} - ${tickToPrice(r.newRange.tickUpper)}`
                   : "—"}
               </td>
               <td className="py-2 px-2">
@@ -387,51 +396,6 @@ function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
   );
 }
 
-// ── User Stats Card ──────────────────────────────────────────────────────
-
-interface UserStats {
-  positionCount: number;
-  totalRebalances: number;
-  successfulRebalances: number;
-  failedRebalances: number;
-  lastScanAt: number;
-}
-
-function StatsBar({ ownerAddress }: { ownerAddress?: string }) {
-  const [stats, setStats] = useState<UserStats | null>(null);
-
-  useEffect(() => {
-    if (!ownerAddress) return;
-    const fetchStats = () => {
-      fetch(`${API_URL}/api/stats/${ownerAddress}`)
-        .then((r) => r.ok ? r.json() : null)
-        .then((data) => { if (data) setStats(data); })
-        .catch(() => {});
-    };
-    fetchStats();
-    const interval = setInterval(fetchStats, 30_000);
-    return () => clearInterval(interval);
-  }, [ownerAddress]);
-
-  if (!stats) return null;
-
-  return (
-    <div className="grid grid-cols-4 gap-3">
-      {[
-        { label: "Positions", value: stats.positionCount.toString() },
-        { label: "Rebalances", value: stats.totalRebalances.toString() },
-        { label: "Success", value: stats.totalRebalances > 0 ? `${Math.round((stats.successfulRebalances / stats.totalRebalances) * 100)}%` : "—" },
-        { label: "Last Scan", value: stats.lastScanAt > 0 ? timeAgo(stats.lastScanAt) : "—" },
-      ].map((s) => (
-        <div key={s.label} className="rounded-lg border border-border/40 bg-card/50 px-3 py-2 text-center">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">{s.label}</div>
-          <div className="mt-0.5 text-sm font-medium text-foreground/80">{s.value}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── Main Dashboard ───────────────────────────────────────────────────────
 
 export function PositionDashboard({
@@ -445,7 +409,7 @@ export function PositionDashboard({
   const { prices } = usePoolPrices(position.pool.poolId, duration);
   const { clearSelection } = usePositionContext();
   const { address } = useAccount();
-  const [activeTab, setActiveTab] = useState<"activity" | "rebalances">("activity");
+  const [activeTab, setActiveTab] = useState<"activity" | "rebalances">("rebalances");
 
   return (
     <div className="mx-auto w-full max-w-4xl px-6 py-6">
@@ -474,150 +438,151 @@ export function PositionDashboard({
         <span className="text-[10px] text-muted-foreground/40">#{position.tokenId}</span>
       </div>
 
-      {/* User Stats Bar */}
-      {address && (
-        <motion.div
-          className="mb-4"
-          animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 4 }}
-          transition={{ duration: 0.2 }}
-        >
-          <StatsBar ownerAddress={address} />
-        </motion.div>
-      )}
-
-      {/* Chart + Stats row */}
-      <div className="grid grid-cols-5 gap-4 mb-6">
-        {/* Chart — takes 3 columns */}
-        <motion.div
-          className="col-span-3 rounded-xl border border-border/50 bg-card p-3 h-[240px] flex flex-col"
-          animate={{ opacity: 1, y: 0 }}
-          initial={{ opacity: 0, y: 6 }}
-          transition={{ duration: 0.3 }}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] text-muted-foreground/50">
-              {position.token0Symbol} Price (in {position.token1Symbol})
-            </span>
-            <div className="flex gap-0.5">
-              {DURATIONS.map((d) => (
-                <button
-                  key={d.value}
-                  onClick={() => setDuration(d.value)}
-                  className={cn(
-                    "px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
-                    duration === d.value
-                      ? "bg-foreground/10 text-foreground"
-                      : "text-muted-foreground/40 hover:text-muted-foreground"
-                  )}
-                >
-                  {d.label}
-                </button>
-              ))}
+      {/* Loading skeleton */}
+      {!prices || prices.length === 0 || !m ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-5 gap-4">
+            <div className="col-span-3 h-[240px] rounded-xl animate-pulse bg-card/50" />
+            <div className="col-span-2 grid grid-cols-2 gap-3">
+              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
+              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
+              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
+              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
             </div>
           </div>
-          <div className="flex-1 min-h-0">
-            <PriceChart
-              prices={prices}
-              tickLower={position.tickLower}
-              tickUpper={position.tickUpper}
-              token0Symbol={position.token0Symbol}
-              token1Symbol={position.token1Symbol}
-            />
-          </div>
-        </motion.div>
-
-        {/* 2x2 Stats — takes 2 columns */}
-        <div className="col-span-2 grid grid-cols-2 gap-3">
-          <motion.div
-            animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-            transition={{ delay: 0.05, duration: 0.3 }}
-            className="rounded-xl border border-border/50 bg-card px-4 py-3"
-          >
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Size</div>
-            <div className="mt-1 text-sm font-medium">{m ? formatUSD(m.positionSizeUSD) : "—"}</div>
-            {m && (
-              <div className="mt-0.5 text-[10px] text-muted-foreground/40">
-                {parseFloat(m.amount0).toFixed(4)} {position.token0Symbol}
+          <div className="h-[200px] rounded-xl animate-pulse bg-card/50" />
+        </div>
+      ) : (
+        <>
+          {/* Chart + Stats row */}
+          <div className="grid grid-cols-5 gap-4 mb-6">
+            {/* Chart — takes 3 columns */}
+            <motion.div
+              className="col-span-3 rounded-xl border border-border/50 bg-card p-3 h-[240px] flex flex-col"
+              animate={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0, y: 6 }}
+              transition={{ duration: 0.3 }}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] text-muted-foreground/50">
+                  {position.token0Symbol} Price (in {position.token1Symbol})
+                </span>
+                <div className="flex gap-0.5">
+                  {DURATIONS.map((d) => (
+                    <button
+                      key={d.value}
+                      onClick={() => setDuration(d.value)}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
+                        duration === d.value
+                          ? "bg-foreground/10 text-foreground"
+                          : "text-muted-foreground/40 hover:text-muted-foreground"
+                      )}
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            )}
-          </motion.div>
+              <div className="flex-1 min-h-0">
+                <PriceChart
+                  prices={prices}
+                  tickLower={position.tickLower}
+                  tickUpper={position.tickUpper}
+                  token0Symbol={position.token0Symbol}
+                  token1Symbol={position.token1Symbol}
+                />
+              </div>
+            </motion.div>
 
+            {/* 2x2 Stats — takes 2 columns */}
+            <div className="col-span-2 grid grid-cols-2 gap-3">
+              <motion.div
+                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
+                transition={{ delay: 0.05, duration: 0.3 }}
+                className="rounded-xl border border-border/50 bg-card px-4 py-3"
+              >
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Size</div>
+                <div className="mt-1 text-sm font-medium">{formatUSD(m.positionSizeUSD)}</div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground/40">
+                  {parseFloat(m.amount0).toFixed(4)} {position.token0Symbol}
+                </div>
+              </motion.div>
+
+              <motion.div
+                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
+                transition={{ delay: 0.1, duration: 0.3 }}
+                className="rounded-xl border border-border/50 bg-card px-4 py-3"
+              >
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Fees</div>
+                <div className="mt-1 text-sm font-medium">{formatUSD(m.feesEarnedUSD)}</div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground/40">{m.feePercent} fee tier</div>
+              </motion.div>
+
+              <motion.div
+                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
+                transition={{ delay: 0.15, duration: 0.3 }}
+                className="rounded-xl border border-border/50 bg-card px-4 py-3"
+              >
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Price</div>
+                <div className="mt-1 text-sm font-medium">
+                  {parseFloat(m.currentPrice).toFixed(2)}
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground/40">
+                  {position.token1Symbol}/{position.token0Symbol}
+                </div>
+              </motion.div>
+
+              <motion.div
+                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
+                transition={{ delay: 0.2, duration: 0.3 }}
+                className="rounded-xl border border-border/50 bg-card px-4 py-3"
+              >
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">APY</div>
+                <div className="mt-1 text-sm font-medium">
+                  {m.apyEstimate != null ? `${m.apyEstimate.toFixed(1)}%` : "—"}
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground/40">estimated</div>
+              </motion.div>
+            </div>
+          </div>
+
+          {/* Tabbed section: Activity + Rebalances */}
           <motion.div
             animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-            transition={{ delay: 0.1, duration: 0.3 }}
-            className="rounded-xl border border-border/50 bg-card px-4 py-3"
+            transition={{ delay: 0.25, duration: 0.3 }}
           >
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Fees</div>
-            <div className="mt-1 text-sm font-medium">{m ? formatUSD(m.feesEarnedUSD) : "—"}</div>
-            {m && (
-              <div className="mt-0.5 text-[10px] text-muted-foreground/40">{m.feePercent} fee tier</div>
+            {/* Tab header */}
+            <div className="flex items-center gap-4 mb-3">
+              <button
+                onClick={() => setActiveTab("activity")}
+                className={cn(
+                  "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
+                  activeTab === "activity" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                )}
+              >
+                Activity
+              </button>
+              <button
+                onClick={() => setActiveTab("rebalances")}
+                className={cn(
+                  "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
+                  activeTab === "rebalances" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                )}
+              >
+                Rebalances
+              </button>
+            </div>
+
+            {/* Tab content */}
+            {activeTab === "activity" ? (
+              <ActionsList tokenId={position.tokenId} ownerAddress={address} />
+            ) : (
+              <RebalanceHistory tokenId={position.tokenId} ownerAddress={address} />
             )}
           </motion.div>
-
-          <motion.div
-            animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-            transition={{ delay: 0.15, duration: 0.3 }}
-            className="rounded-xl border border-border/50 bg-card px-4 py-3"
-          >
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Price</div>
-            <div className="mt-1 text-sm font-medium">
-              {m ? parseFloat(m.currentPrice).toFixed(2) : "—"}
-            </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground/40">
-              {position.token1Symbol}/{position.token0Symbol}
-            </div>
-          </motion.div>
-
-          <motion.div
-            animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-            transition={{ delay: 0.2, duration: 0.3 }}
-            className="rounded-xl border border-border/50 bg-card px-4 py-3"
-          >
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">APY</div>
-            <div className="mt-1 text-sm font-medium">
-              {m?.apyEstimate != null ? `${m.apyEstimate.toFixed(1)}%` : "—"}
-            </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground/40">estimated</div>
-          </motion.div>
-        </div>
-      </div>
-
-      {/* Tabbed section: Activity + Rebalances */}
-      <motion.div
-        animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-        transition={{ delay: 0.25, duration: 0.3 }}
-      >
-        {/* Tab header */}
-        <div className="flex items-center gap-4 mb-3">
-          <button
-            onClick={() => setActiveTab("activity")}
-            className={cn(
-              "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
-              activeTab === "activity" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
-            )}
-          >
-            <ActivityIcon className="size-3" />
-            Activity
-          </button>
-          <button
-            onClick={() => setActiveTab("rebalances")}
-            className={cn(
-              "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
-              activeTab === "rebalances" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
-            )}
-          >
-            <RefreshCwIcon className="size-3" />
-            Rebalances
-          </button>
-        </div>
-
-        {/* Tab content */}
-        {activeTab === "activity" ? (
-          <ActionsList tokenId={position.tokenId} ownerAddress={address} />
-        ) : (
-          <RebalanceHistory ownerAddress={address} />
-        )}
-      </motion.div>
+        </>
+      )}
     </div>
   );
 }

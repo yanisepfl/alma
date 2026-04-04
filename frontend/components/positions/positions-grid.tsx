@@ -69,11 +69,19 @@ export function PositionsGrid() {
         const rebalances = todayActions.filter(
           (a: any) => a.type === "rebalance" && a.status === "completed"
         );
-        const uniquePositions = new Set(rebalances.map((a: any) => a.tokenId).filter(Boolean));
+        // Deduplicate by txHash to avoid double-counting
+        const seen = new Set<string>();
+        const uniqueRebalances = rebalances.filter((a: any) => {
+          const key = a.txHashes?.[0] || a.id;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const uniquePositions = new Set(uniqueRebalances.map((a: any) => a.tokenId).filter(Boolean));
 
-        if (rebalances.length > 0) {
+        if (uniqueRebalances.length > 0) {
           setMessage(
-            `I rebalanced ${uniquePositions.size} position${uniquePositions.size !== 1 ? "s" : ""} ${rebalances.length} time${rebalances.length !== 1 ? "s" : ""} today!`
+            `I rebalanced ${uniquePositions.size} position${uniquePositions.size !== 1 ? "s" : ""} ${uniqueRebalances.length} time${uniqueRebalances.length !== 1 ? "s" : ""} today!`
           );
         } else {
           const meaningful = todayActions.filter((a: any) => a.type !== "monitor");
