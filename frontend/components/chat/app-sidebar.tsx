@@ -31,6 +31,46 @@ function timeAgo(ts: number | string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+/**
+ * Convert a Uniswap tick to a human-readable price using price = 1.0001^tick.
+ * If the result is in a plausible dollar range (0.01–100,000), format as $X.XX
+ * (stablecoin pairs where token1 is USDC/USDS/USDT/DAI naturally land here).
+ * Otherwise show the raw price to ~4 significant digits.
+ */
+function tickToPrice(tick: number): string {
+  const price = Math.pow(1.0001, tick);
+  if (price >= 0.01 && price <= 100_000) {
+    return `$${price.toFixed(2)}`;
+  }
+  return price.toPrecision(4);
+}
+
+/**
+ * Find tick-range patterns like `[-200580, -199380]` or standalone ticks like
+ * `tick -200580` in a summary string and convert them to approximate prices.
+ */
+function formatTickSummary(summary: string): string {
+  // Replace tick range patterns: [tickLower, tickUpper]
+  let result = summary.replace(
+    /\[(-?\d+),\s*(-?\d+)\]/g,
+    (_match, lower, upper) => {
+      const priceLower = tickToPrice(Number(lower));
+      const priceUpper = tickToPrice(Number(upper));
+      return `[${priceLower}, ${priceUpper}]`;
+    }
+  );
+
+  // Replace standalone "tick <number>" patterns (e.g. "tick -200580 in")
+  result = result.replace(
+    /tick\s+(-?\d+)/g,
+    (_match, t) => {
+      return `tick ${tickToPrice(Number(t))}`;
+    }
+  );
+
+  return result;
+}
+
 const STATUS_ICON = {
   completed: IconCheck,
   pending: IconCircleInfo,
@@ -45,15 +85,26 @@ export function AppSidebar() {
   const [actions, setActions] = useState<AgentAction[]>([]);
 
   useEffect(() => {
+    if (!address) {
+      setActions([]);
+      return;
+    }
+
     const fetchActions = () => {
       const params = new URLSearchParams({ limit: "15" });
-      if (address) params.set("address", address);
+      params.set("address", address);
       fetch(`${AGENT_API}/api/actions?${params}`)
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
-          // Handle both array and {actions:[]} formats
           const arr = Array.isArray(data) ? data : data?.actions;
-          if (Array.isArray(arr) && arr.length > 0) setActions(arr);
+          if (Array.isArray(arr)) {
+            const filtered = arr.filter(
+              (a: AgentAction) =>
+                a.type !== "monitor" &&
+                a.owner?.toLowerCase() === address.toLowerCase()
+            );
+            setActions(filtered);
+          }
         })
         .catch(() => {});
     };
@@ -92,7 +143,11 @@ export function AppSidebar() {
 
       {/* Action list */}
       <div className="flex-1 overflow-y-auto px-3 space-y-2">
-        {actions.length === 0 ? (
+        {!address ? (
+          <div className="flex items-center justify-center h-20 text-[11px] text-muted-foreground/40">
+            Connect wallet to see activity
+          </div>
+        ) : actions.length === 0 ? (
           <div className="flex items-center justify-center h-20 text-[11px] text-muted-foreground/40">
             No actions yet
           </div>
@@ -102,7 +157,6 @@ export function AppSidebar() {
             const titles: Record<string, string> = {
               rebalance: "Rebalance",
               claim: "Claim Fees",
-              monitor: "Monitoring",
               delegation: "Delegation",
               registration: "Registered",
             };
@@ -124,7 +178,7 @@ export function AppSidebar() {
                   </span>
                 </div>
                 <p className="text-[11px] text-muted-foreground/70 leading-snug">
-                  {action.summary}
+                  {formatTickSummary(action.summary)}
                 </p>
                 {action.txHashes?.[0] && (
                   <a

@@ -8,6 +8,8 @@
  *   GET  /api/actions            — activity history (all or per-address)
  *   GET  /api/rebalances         — rebalance history (all or per-address)
  *   GET  /api/stats/:address     — per-user stats
+ *   POST /api/settings           — save user settings (risk, slippage, auto-rebalance)
+ *   GET  /api/settings/:address  — get user settings
  *
  * Run: npx tsx src/server.ts
  */
@@ -36,11 +38,14 @@ import {
   getRegisteredUsers,
   getUserStats,
   updateUserStats,
+  getUserSettings,
+  saveUserSettings,
   logActivity,
   getActivities,
   logRebalance,
   getRebalances,
   checkRedisConnection,
+  type UserSettings,
 } from './lib/store.js';
 
 // ---------------------------------------------------------------------------
@@ -283,6 +288,43 @@ app.get('/api/stats/:address', async (req, res) => {
   res.json(stats);
 });
 
+// POST /api/settings — save user settings
+app.post('/api/settings', async (req, res) => {
+  const { address, settings } = req.body as { address?: string; settings?: UserSettings };
+  if (!address || !settings) {
+    res.status(400).json({ error: 'address and settings are required' });
+    return;
+  }
+
+  const valid: UserSettings = {
+    riskProfile: ['low', 'medium', 'high'].includes(settings.riskProfile) ? settings.riskProfile : 'medium',
+    maxSlippage: typeof settings.maxSlippage === 'number' && settings.maxSlippage > 0 ? settings.maxSlippage : 50,
+    autoRebalance: typeof settings.autoRebalance === 'boolean' ? settings.autoRebalance : true,
+  };
+
+  await saveUserSettings(address, valid);
+  console.log(`[settings] Saved for ${address.toLowerCase()}: risk=${valid.riskProfile}, slippage=${valid.maxSlippage}bps, auto=${valid.autoRebalance}`);
+  res.json({ ok: true, settings: valid });
+});
+
+// GET /api/settings/:address — get user settings
+app.get('/api/settings/:address', async (req, res) => {
+  const settings = await getUserSettings(req.params.address);
+  res.json(settings);
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getRangeMultiplier(risk: string): number {
+  switch (risk) {
+    case 'low': return 20;
+    case 'high': return 5;
+    default: return 10;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Monitoring Loop — runs every 60s
 // ---------------------------------------------------------------------------
@@ -330,7 +372,9 @@ async function monitorPositions() {
 
   for (const addr of registeredAddrs) {
     const positions = userPositions.get(addr) || [];
-    console.log(`\n  User: ${addr} | Positions: ${positions.length}`);
+    const userSettings = await getUserSettings(addr);
+    const rangeMultiplier = getRangeMultiplier(userSettings.riskProfile);
+    console.log(`\n  User: ${addr} | Positions: ${positions.length} | Risk: ${userSettings.riskProfile} | Slippage: ${userSettings.maxSlippage}bps | Auto: ${userSettings.autoRebalance}`);
 
     for (const tokenId of positions) {
       console.log(`\n  --- Position #${tokenId} ---`);
@@ -358,10 +402,23 @@ async function monitorPositions() {
           const dir = pool.tick < position.tickLower ? 'BELOW' : 'ABOVE';
           console.log(`  Status: OUT OF RANGE (${dir}) — ${ticksOutOfRange} ticks (${percentOutOfRange.toFixed(1)}%)`);
 
+          if (!userSettings.autoRebalance) {
+            console.log(`  -> Auto-rebalance DISABLED for this user, skipping`);
+            await logActivity({
+              type: 'monitor',
+              status: 'completed',
+              summary: `#${tokenId} out of range but auto-rebalance disabled`,
+              timestamp: Date.now(),
+              tokenId,
+              owner: addr,
+            });
+            continue;
+          }
+
           const decision = await evaluateRebalance(BigInt(tokenId), config);
 
           if (decision.shouldRebalance) {
-            console.log(`  -> REBALANCE TRIGGERED`);
+            console.log(`  -> REBALANCE TRIGGERED (rangeMultiplier=${rangeMultiplier}, slippage=${userSettings.maxSlippage}bps)`);
 
             if (rebalancingInProgress.has(tokenId)) {
               console.log(`  -> Already in progress, skipping`);
@@ -393,6 +450,8 @@ async function monitorPositions() {
                 walletClient,
                 publicClient,
                 uniswapApi,
+                rangeWidthMultiplier: rangeMultiplier,
+                slippageBps: userSettings.maxSlippage,
               });
 
               rebalancingInProgress.delete(tokenId);

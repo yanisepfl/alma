@@ -13,6 +13,7 @@ import {
   computeKeyHash,
   buildDelegationCalls,
 } from "@/lib/delegation/actions";
+import { syncSettingsToBackend, type AlmaSettings } from "@/hooks/use-settings";
 
 export type DelegationStatus =
   | "unknown"
@@ -290,6 +291,18 @@ export function useDelegation() {
 
         setTxHash(result.txHash as Hex);
         await publicClient.waitForTransactionReceipt({ hash: result.txHash });
+
+        // Sync current settings to backend so rebalancer uses them from the start
+        try {
+          const STORAGE_KEY = "alma-settings";
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const currentSettings: AlmaSettings = raw
+            ? JSON.parse(raw)
+            : { riskProfile: "medium", maxSlippage: 50, autoRebalance: true };
+          await syncSettingsToBackend(address, currentSettings);
+        } catch (e) {
+          console.warn("[delegate] Failed to sync settings:", e);
+        }
 
         setStatus("delegated");
         return true;

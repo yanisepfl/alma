@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useAccount } from "wagmi";
 import { usePositionContext } from "@/hooks/use-position-context";
 import { useDelegation } from "@/hooks/use-delegation";
 import { QUIRKY_MESSAGES } from "@/lib/positions/constants";
@@ -45,6 +46,7 @@ function estimateDailyYield(
 }
 
 export function PositionsGrid() {
+  const { address } = useAccount();
   const { positions, isLoading, selectPosition } = usePositionContext();
   const { status: delegationStatus } = useDelegation();
   const [page, setPage] = useState(0);
@@ -53,30 +55,39 @@ export function PositionsGrid() {
   const isDelegated = delegationStatus === "delegated";
 
   useEffect(() => {
-    // Fetch global stats from backend
-    fetch(`${API_URL}/api/actions`)
+    if (!address) {
+      setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
+      return;
+    }
+
+    fetch(`${API_URL}/api/actions?address=${address}`)
       .then((r) => r.ok ? r.json() : [])
       .then((data) => {
         const actions = Array.isArray(data) ? data : data?.actions ?? [];
         const today = Date.now() - 24 * 60 * 60 * 1000;
         const todayActions = actions.filter((a: any) => a.timestamp > today);
-        const rebalances = todayActions.filter((a: any) => a.type === "rebalance");
+        const rebalances = todayActions.filter(
+          (a: any) => a.type === "rebalance" && a.status === "completed"
+        );
         const uniquePositions = new Set(rebalances.map((a: any) => a.tokenId).filter(Boolean));
 
         if (rebalances.length > 0) {
           setMessage(
             `I rebalanced ${uniquePositions.size} position${uniquePositions.size !== 1 ? "s" : ""} ${rebalances.length} time${rebalances.length !== 1 ? "s" : ""} today!`
           );
-        } else if (todayActions.length > 0) {
-          setMessage(`I monitored ${todayActions.length} position${todayActions.length !== 1 ? "s" : ""} today!`);
         } else {
-          setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
+          const meaningful = todayActions.filter((a: any) => a.type !== "monitor");
+          if (meaningful.length > 0) {
+            setMessage(`I monitored ${meaningful.length} position${meaningful.length !== 1 ? "s" : ""} today!`);
+          } else {
+            setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
+          }
         }
       })
       .catch(() => {
         setMessage(QUIRKY_MESSAGES[Math.floor(Math.random() * QUIRKY_MESSAGES.length)]);
       });
-  }, []);
+  }, [address]);
 
   const totalPages = Math.max(1, Math.ceil((positions.length + 1) / PAGE_SIZE));
   const startIdx = page * PAGE_SIZE;

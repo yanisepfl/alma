@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { SettingsIcon } from "lucide-react";
+import { useAccount } from "wagmi";
 import {
   Dialog,
   DialogContent,
@@ -22,7 +23,8 @@ const SLIPPAGE_OPTIONS = [10, 30, 50, 100]; // bps
 
 export function SettingsButton() {
   const [open, setOpen] = useState(false);
-  const { settings, update } = useSettings();
+  const { address } = useAccount();
+  const { settings, update } = useSettings(address);
 
   return (
     <>

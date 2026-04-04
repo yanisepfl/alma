@@ -137,6 +137,7 @@ export async function executeRebalance(params: {
   publicClient: PublicClient;
   uniswapApi: UniswapApiClient;
   rangeWidthMultiplier?: number;
+  slippageBps?: number;
 }): Promise<RebalanceResult> {
   const {
     tokenId,
@@ -148,6 +149,7 @@ export async function executeRebalance(params: {
     publicClient,
     uniswapApi,
     rangeWidthMultiplier = 10,
+    slippageBps = 50,
   } = params;
 
   const { status } = decision;
@@ -221,6 +223,8 @@ export async function executeRebalance(params: {
       log(`  Direction: ${outBelow ? 'token0 -> token1' : 'token1 -> token0'}`);
       log(`  Swap amount: ${swapAmount}`);
 
+      // Convert bps to percentage for Uniswap API (e.g. 50 bps -> 0.5%)
+      const slippagePct = slippageBps / 100;
       const quote = await uniswapApi.quote({
         type: 'EXACT_INPUT',
         amount: swapAmount.toString(),
@@ -229,7 +233,7 @@ export async function executeRebalance(params: {
         tokenIn,
         tokenOut,
         swapper: userEOA,
-        slippageTolerance: 0.5,
+        slippageTolerance: slippagePct,
       });
 
       swapOutputAmount = BigInt(quote.quote.output.amount);
@@ -291,7 +295,7 @@ export async function executeRebalance(params: {
           amount1: postSwapAmount1,
           recipient: userEOA,
           deadlineTimestamp,
-          slippageBps: 2000,
+          slippageBps,
         });
         if (mint.liquidity !== '0') break;
         log(`  Liquidity is 0, trying narrower range...`);

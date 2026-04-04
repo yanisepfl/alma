@@ -7,6 +7,7 @@
  *   alma:rebalances:{address} — sorted set of rebalance records (score = timestamp)
  *   alma:users                — set of registered user addresses
  *   alma:stats:{address}      — hash with per-user aggregate stats
+ *   alma:settings:{address}   — hash with per-user agent settings (risk, slippage, etc.)
  */
 
 import { Redis } from '@upstash/redis';
@@ -33,6 +34,7 @@ const mem = {
   activities: [] as Activity[],
   rebalances: [] as RebalanceRecord[],
   stats: new Map<string, UserStats>(),
+  settings: new Map<string, UserSettings>(),
 };
 
 // ---------------------------------------------------------------------------
@@ -73,6 +75,14 @@ export interface UserStats {
   registeredAt: number;
 }
 
+export type RiskProfile = 'low' | 'medium' | 'high';
+
+export interface UserSettings {
+  riskProfile: RiskProfile;
+  maxSlippage: number; // in bps, e.g. 50 = 0.5%
+  autoRebalance: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Keys
 // ---------------------------------------------------------------------------
@@ -82,6 +92,7 @@ const K = {
   rebalances: (addr: string) => `alma:rebalances:${addr.toLowerCase()}`,
   users: 'alma:users',
   stats: (addr: string) => `alma:stats:${addr.toLowerCase()}`,
+  settings: (addr: string) => `alma:settings:${addr.toLowerCase()}`,
   allActivity: 'alma:activity:all',
   allRebalances: 'alma:rebalances:all',
 };
@@ -125,6 +136,39 @@ export async function updateUserStats(address: string, updates: Partial<UserStat
     return;
   }
   await redis.hset(K.stats(address.toLowerCase()), updates as Record<string, any>);
+}
+
+// ---------------------------------------------------------------------------
+// User Settings
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SETTINGS: UserSettings = {
+  riskProfile: 'medium',
+  maxSlippage: 50,
+  autoRebalance: true,
+};
+
+export async function saveUserSettings(address: string, settings: UserSettings): Promise<void> {
+  const addr = address.toLowerCase();
+  if (!redis) {
+    mem.settings.set(addr, settings);
+    return;
+  }
+  await redis.hset(K.settings(addr), settings as Record<string, any>);
+}
+
+export async function getUserSettings(address: string): Promise<UserSettings> {
+  const addr = address.toLowerCase();
+  if (!redis) {
+    return mem.settings.get(addr) ?? { ...DEFAULT_SETTINGS };
+  }
+  const data = await redis.hgetall(K.settings(addr));
+  if (!data || Object.keys(data).length === 0) return { ...DEFAULT_SETTINGS };
+  return {
+    riskProfile: (data as any).riskProfile ?? DEFAULT_SETTINGS.riskProfile,
+    maxSlippage: Number((data as any).maxSlippage ?? DEFAULT_SETTINGS.maxSlippage),
+    autoRebalance: String((data as any).autoRebalance) === 'true',
+  };
 }
 
 // ---------------------------------------------------------------------------
