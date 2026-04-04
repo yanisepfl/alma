@@ -42,7 +42,7 @@ async function getTickMath() {
 
 /** Build a V4Pool from on-chain state. */
 /** Token decimals lookup. */
-function getDecimals(address: string, config: ChainConfig): number {
+export function getDecimals(address: string, config: ChainConfig): number {
   const addr = address.toLowerCase();
   if (addr === ZERO_ADDRESS) return 18; // ETH
   // Check known tokens from config
