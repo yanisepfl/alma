@@ -41,20 +41,36 @@ async function getTickMath() {
 }
 
 /** Build a V4Pool from on-chain state. */
+/** Token decimals lookup. */
+function getDecimals(address: string, config: ChainConfig): number {
+  const addr = address.toLowerCase();
+  if (addr === ZERO_ADDRESS) return 18; // ETH
+  // Check known tokens from config
+  for (const [, t] of Object.entries(config.tokens)) {
+    if (t.address.toLowerCase() === addr) return t.decimals;
+  }
+  // Common Base tokens
+  if (addr === '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913') return 6; // USDC
+  if (addr === '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf') return 8; // cbBTC
+  return 18; // default
+}
+
 async function buildV4Pool(
   position: PositionInfo,
   pool: PoolState,
   config: ChainConfig,
 ) {
-  const TickMath = await getTickMath();
-  const sqrtPriceX96 = JSBI.BigInt(pool.sqrtPriceX96.toString());
-  const tick = TickMath.getTickAtSqrtRatio(sqrtPriceX96);
+  // Use on-chain tick directly — TickMath.getTickAtSqrtRatio can differ
+  // due to rounding and causes PRICE_BOUNDS errors
+  const tick = pool.tick;
 
   const currency0 = sdkCurrency(
-    position.poolKey.currency0, config.chainId, 18, 'token0',
+    position.poolKey.currency0, config.chainId,
+    getDecimals(position.poolKey.currency0, config), 'token0',
   );
   const currency1 = sdkCurrency(
-    position.poolKey.currency1, config.chainId, 6, 'token1',
+    position.poolKey.currency1, config.chainId,
+    getDecimals(position.poolKey.currency1, config), 'token1',
   );
 
   return new V4Pool(
@@ -63,7 +79,7 @@ async function buildV4Pool(
     position.poolKey.fee,
     position.poolKey.tickSpacing,
     position.poolKey.hooks,
-    sqrtPriceX96.toString(),
+    JSBI.BigInt(pool.sqrtPriceX96.toString()).toString(),
     JSBI.BigInt(pool.liquidity.toString()).toString(),
     tick,
   );
