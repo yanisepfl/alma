@@ -22,6 +22,7 @@
     "@uniswap/universal-router-sdk": "4.19.5",
     "@uniswap/v3-sdk": "^3.20.0",
     "@uniswap/v4-sdk": "1.21.2",
+    "@upstash/redis": "^1.37.0",
     "cors": "^2.8.6",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",

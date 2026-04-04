@@ -179,17 +179,22 @@ export async function executeRebalance(params: {
       };
     }
 
+    // ─── Compute shared deadline ────────────────────────────────────────
+
+    const deadlineTimestamp = BigInt(Math.floor(Date.now() / 1000) + 300);
+
     // ─── STEP 1: Build burn calldata ─────────────────────────────────────
 
-    log('Building burn calldata...');
-    const burnEstimate = estimateBurnAmounts(position, pool);
+    log('Building burn calldata (V4 SDK)...');
+    const burnEstimate = await estimateBurnAmounts(position, pool, config);
     log(`  Estimated burn output: ${burnEstimate.amount0} token0, ${burnEstimate.amount1} token1`);
 
-    const burn = buildBurnCalldata({
+    const burn = await buildBurnCalldata({
       position,
       pool,
       config,
       recipient: userEOA,
+      deadlineTimestamp,
     });
     log(`  Burn calldata: ${burn.calldata.length} chars`);
 
@@ -260,7 +265,7 @@ export async function executeRebalance(params: {
       config.contracts.permit2,
     );
 
-    const mint = buildMintCalldata({
+    const mint = await buildMintCalldata({
       pool,
       poolKey: position.poolKey,
       config,
@@ -268,10 +273,9 @@ export async function executeRebalance(params: {
       tickUpper: newRange.tickUpper,
       amount0: postSwapAmount0,
       amount1: postSwapAmount1,
-      token0Decimals: 18,
-      token1Decimals: 18,
       recipient: userEOA,
-      slippageBps: 200, // 2% slippage for batched execution
+      deadlineTimestamp,
+      slippageBps: 2000, // 20% slippage for batched execution (amounts are estimates)
     });
     log(`  Mint calldata: ${mint.calldata.length} chars, liquidity: ${mint.liquidity}`);
 

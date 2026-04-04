@@ -3,6 +3,7 @@
 import { RefreshCwIcon } from "lucide-react";
 import { usePositionContext } from "@/hooks/use-position-context";
 import { ConnectButton } from "../connect-button";
+import { SettingsButton } from "../settings-modal";
 import { PositionDashboard } from "../positions/position-dashboard";
 import { PositionsGrid } from "../positions/positions-grid";
 
@@ -12,6 +13,7 @@ export function ChatShell() {
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden">
       <div className="absolute top-3 right-4 z-20 flex items-center gap-2">
+        <SettingsButton />
         <button
           onClick={refresh}
           disabled={isLoading}

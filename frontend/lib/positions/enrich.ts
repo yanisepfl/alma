@@ -152,14 +152,26 @@ export async function enrichPosition(
     ? "Dynamic"
     : `${(poolKey.fee / 10_000).toFixed(2)}%`;
 
-  // 6. APY estimate (annualized fees / position size)
-  // Very rough: assume fees earned since position creation
-  // Without creation timestamp, we use a conservative 30-day assumption
+  // 6. APY estimate
+  // If we have accumulated fees, use those (assume 30 day accumulation)
+  // Otherwise, estimate from fee tier, range width, and pool volume heuristic
   let apyEstimate: number | null = null;
   if (positionSizeUSD > 0 && feesEarnedUSD > 0) {
-    // Rough: assume 30 days of fee accumulation
     const dailyReturn = feesEarnedUSD / 30;
     apyEstimate = (dailyReturn * 365 / positionSizeUSD) * 100;
+  } else if (positionSizeUSD > 0) {
+    // Heuristic: narrower ranges earn more fees but are out of range more often
+    // Base estimate from fee tier, adjusted by range concentration
+    const feeRate = poolKey.fee / 1_000_000; // e.g. 0.003 for 30bps
+    const rangeWidth = tickUpper - tickLower;
+    const fullRange = 887272 * 2; // roughly full tick range
+    const concentration = fullRange / Math.max(rangeWidth, 1);
+    // Assume pool does ~50% of TVL in daily volume (rough heuristic for active pools)
+    const dailyVolumeRatio = 0.5;
+    const dailyFeeRate = feeRate * dailyVolumeRatio * Math.min(concentration, 100);
+    apyEstimate = dailyFeeRate * 365 * 100;
+    // Cap at reasonable bounds
+    apyEstimate = Math.min(apyEstimate, 500);
   }
 
   return {

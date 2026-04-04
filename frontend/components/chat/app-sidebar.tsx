@@ -83,7 +83,7 @@ export function AppSidebar() {
             height={16}
             className="dark:invert"
           />
-          <span className="text-lg font-[family-name:var(--font-serif)] text-sidebar-foreground">
+          <span className="text-xl font-[family-name:var(--font-serif)] text-sidebar-foreground">
             Alma
           </span>
         </button>

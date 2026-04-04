@@ -1,11 +1,13 @@
 /**
  * ALMA Agent Backend — Server for delegation relay + position monitoring + auto-rebalancing.
  *
- *   GET  /api/agent     — agent public address
- *   POST /api/delegate  — relay signed delegation via Calibur execute(SignedBatchedCall)
- *   GET  /api/actions   — agent action history
- *   POST /api/users     — register user for monitoring
+ *   GET  /api/agent              — agent public address
+ *   POST /api/delegate           — relay signed delegation via Calibur
+ *   POST /api/users              — register user for monitoring
  *   POST /api/rebalance/:tokenId — trigger manual rebalance
+ *   GET  /api/actions            — activity history (all or per-address)
+ *   GET  /api/rebalances         — rebalance history (all or per-address)
+ *   GET  /api/stats/:address     — per-user stats
  *
  * Run: npx tsx src/server.ts
  */
@@ -28,6 +30,18 @@ import { evaluateRebalance, executeRebalance } from './lib/rebalancer.js';
 import { checkPositionStatus, getPositionOwner } from './lib/position-monitor.js';
 import { computeKeyHash } from './lib/calibur.js';
 import { UniswapApiClient } from './lib/uniswap-api.js';
+import { discoverPositions } from './lib/position-discovery.js';
+import {
+  registerUser,
+  getRegisteredUsers,
+  getUserStats,
+  updateUserStats,
+  logActivity,
+  getActivities,
+  logRebalance,
+  getRebalances,
+  checkRedisConnection,
+} from './lib/store.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -47,39 +61,11 @@ const publicClient = getPublicClient(config);
 const { walletClient } = getWalletClient(config, AGENT_PK);
 const uniswapApi = new UniswapApiClient();
 
-// ---------------------------------------------------------------------------
-// In-memory state
-// ---------------------------------------------------------------------------
-
-interface MonitoredUser {
-  address: Address;
-  positions: string[];
-  registeredAt: number;
-}
-
-interface Action {
-  type: string;
-  status: string;
-  summary: string;
-  timestamp: number;
-  tokenId?: string;
-  owner?: string;
-  txHashes?: string[];
-}
-
-const users = new Map<string, MonitoredUser>();
-const actions: Action[] = [];
-const MAX_ACTIONS = 200;
-
-// Track positions currently being rebalanced to avoid double-triggering
+// In-memory cache of user positions (refreshed each scan from subgraph)
+const userPositions = new Map<string, string[]>();
 const rebalancingInProgress = new Set<string>();
 
-function trackAction(a: Omit<Action, 'timestamp'>) {
-  actions.unshift({ ...a, timestamp: Date.now() });
-  if (actions.length > MAX_ACTIONS) actions.pop();
-}
-
-function timestamp(): string {
+function ts(): string {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);
 }
 
@@ -111,7 +97,6 @@ app.post('/api/delegate', async (req, res) => {
 
   try {
     console.log(`[delegate] Relaying SignedBatchedCall for ${userAddress}`);
-    console.log(`[delegate] Raw signedBatchedCall:`, JSON.stringify(signedBatchedCall, null, 2));
 
     const parsedCall = {
       batchedCall: {
@@ -128,9 +113,6 @@ app.post('/api/delegate', async (req, res) => {
       deadline: BigInt(signedBatchedCall.deadline),
     };
 
-    console.log(`[delegate] Parsed nonce: ${parsedCall.nonce}`);
-    console.log(`[delegate] Calls count: ${parsedCall.batchedCall.calls.length}`);
-
     const wrappedSignature = encodeAbiParameters(
       [{ type: 'bytes' }, { type: 'bytes' }],
       [signature as Hex, '0x' as Hex]
@@ -141,8 +123,6 @@ app.post('/api/delegate', async (req, res) => {
       functionName: 'execute',
       args: [parsedCall, wrappedSignature],
     });
-
-    console.log(`[delegate] Calldata length: ${calldata.length}`);
 
     const txHash = await walletClient.sendTransaction({
       to: userAddress as Address,
@@ -156,19 +136,17 @@ app.post('/api/delegate', async (req, res) => {
     const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
     console.log(`[delegate] Confirmed in block ${receipt.blockNumber}`);
 
-    // Register user for monitoring
-    const userAddr = userAddress.toLowerCase() as Address;
-    users.set(userAddr, {
-      address: userAddr,
-      positions: positions ?? [],
-      registeredAt: Date.now(),
-    });
+    // Register user in Redis
+    const userAddr = userAddress.toLowerCase();
+    await registerUser(userAddr);
 
-    trackAction({
+    await logActivity({
       type: 'delegation',
       status: 'completed',
-      summary: `Delegation set up for ${userAddr.slice(0, 8)}...`,
+      summary: `Delegation set up for ${userAddr.slice(0, 10)}...`,
+      timestamp: Date.now(),
       owner: userAddr,
+      txHashes: [txHash],
     });
 
     res.json({ ok: true, txHash });
@@ -180,21 +158,25 @@ app.post('/api/delegate', async (req, res) => {
 
 // POST /api/users — register user for monitoring
 app.post('/api/users', async (req, res) => {
-  const { address, positions } = req.body as { address?: string; positions?: string[] };
+  const { address } = req.body as { address?: string };
   if (!address) { res.status(400).json({ error: 'address required' }); return; }
 
-  const userAddr = address.toLowerCase() as Address;
-  users.set(userAddr, {
-    address: userAddr,
-    positions: positions ?? [],
-    registeredAt: Date.now(),
+  const userAddr = address.toLowerCase();
+  await registerUser(userAddr);
+
+  await logActivity({
+    type: 'registration',
+    status: 'completed',
+    summary: `User ${userAddr.slice(0, 10)}... registered for monitoring`,
+    timestamp: Date.now(),
+    owner: userAddr,
   });
 
-  console.log(`[register] ${userAddr} — ${positions?.length || 0} positions`);
+  console.log(`[register] ${userAddr}`);
   res.json({ ok: true });
 });
 
-// POST /api/rebalance/:tokenId — trigger manual rebalance check + execution
+// POST /api/rebalance/:tokenId — trigger manual rebalance
 app.post('/api/rebalance/:tokenId', async (req, res) => {
   const tokenId = BigInt(req.params.tokenId);
   const tokenIdStr = tokenId.toString();
@@ -207,46 +189,29 @@ app.post('/api/rebalance/:tokenId', async (req, res) => {
 
   try {
     const decision = await evaluateRebalance(tokenId, config);
-    console.log(`[rebalance] Decision: ${decision.reason}`);
 
     if (!decision.shouldRebalance) {
-      trackAction({
-        type: 'monitor',
-        status: 'completed',
-        summary: `Position #${tokenIdStr}: ${decision.reason}`,
-        tokenId: tokenIdStr,
-      });
       res.json({ ok: true, action: 'none', reason: decision.reason });
       return;
     }
 
-    // Find the user who owns this position
-    let ownerAddress: Address | undefined;
-    for (const [addr, user] of users) {
-      if (user.positions.includes(tokenIdStr)) {
-        ownerAddress = addr as Address;
-        break;
-      }
+    let ownerAddress: Address;
+    try {
+      ownerAddress = await getPositionOwner(tokenId, config);
+    } catch {
+      res.status(400).json({ error: 'Cannot determine position owner.' });
+      return;
     }
 
-    if (!ownerAddress) {
-      // Try to read owner from chain
-      try {
-        ownerAddress = await getPositionOwner(tokenId, config);
-      } catch {
-        res.status(400).json({ error: 'Cannot determine position owner. Register the user first.' });
-        return;
-      }
-    }
-
-    // Execute the rebalance
     rebalancingInProgress.add(tokenIdStr);
-    trackAction({
+
+    await logActivity({
       type: 'rebalance',
       status: 'in_progress',
-      summary: `Rebalancing #${tokenIdStr}: ${decision.reason}`,
+      summary: `Manual rebalance #${tokenIdStr}: ${decision.reason}`,
+      timestamp: Date.now(),
       tokenId: tokenIdStr,
-      owner: ownerAddress,
+      owner: ownerAddress.toLowerCase(),
     });
 
     const result = await executeRebalance({
@@ -262,18 +227,30 @@ app.post('/api/rebalance/:tokenId', async (req, res) => {
 
     rebalancingInProgress.delete(tokenIdStr);
 
-    trackAction({
+    await logRebalance({
+      tokenId: tokenIdStr,
+      owner: ownerAddress.toLowerCase(),
+      timestamp: Date.now(),
+      success: result.success,
+      txHash: result.txHash,
+      blockNumber: result.blockNumber?.toString(),
+      newRange: result.newRange,
+      error: result.error,
+      details: result.details,
+    });
+
+    await logActivity({
       type: 'rebalance',
       status: result.success ? 'completed' : 'failed',
       summary: result.success
-        ? `Rebalanced #${tokenIdStr} -> range [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`
+        ? `Rebalanced #${tokenIdStr} -> [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`
         : `Rebalance #${tokenIdStr} failed: ${result.error}`,
+      timestamp: Date.now(),
       tokenId: tokenIdStr,
-      owner: ownerAddress,
+      owner: ownerAddress.toLowerCase(),
       txHashes: result.txHash ? [result.txHash] : [],
     });
 
-    // Serialize BigInts for JSON response
     const safeResult = JSON.parse(JSON.stringify(result, (_, v) => typeof v === 'bigint' ? v.toString() : v));
     res.json({ ok: true, result: safeResult });
   } catch (e: any) {
@@ -283,97 +260,124 @@ app.post('/api/rebalance/:tokenId', async (req, res) => {
   }
 });
 
-// GET /api/actions — action history
-app.get('/api/actions', (_req, res) => {
-  res.json(actions);
+// GET /api/actions — activity history
+app.get('/api/actions', async (req, res) => {
+  const address = req.query.address as string | undefined;
+  const limit = parseInt(req.query.limit as string || '50');
+  const activities = await getActivities(address, limit);
+  res.json(activities);
+});
+
+// GET /api/rebalances — rebalance history
+app.get('/api/rebalances', async (req, res) => {
+  const address = req.query.address as string | undefined;
+  const limit = parseInt(req.query.limit as string || '50');
+  const records = await getRebalances(address, limit);
+  res.json(records);
+});
+
+// GET /api/stats/:address — per-user stats
+app.get('/api/stats/:address', async (req, res) => {
+  const stats = await getUserStats(req.params.address);
+  if (!stats) { res.status(404).json({ error: 'User not found' }); return; }
+  res.json(stats);
 });
 
 // ---------------------------------------------------------------------------
 // Monitoring Loop — runs every 60s
 // ---------------------------------------------------------------------------
 
-const MONITOR_INTERVAL = 60_000; // 60s
+const MONITOR_INTERVAL = 60_000;
 let scanCount = 0;
 
 async function monitorPositions() {
   scanCount++;
-  const totalPositions = Array.from(users.values()).reduce((sum, u) => sum + u.positions.length, 0);
+
+  // Load registered users from Redis
+  const registeredAddrs = await getRegisteredUsers();
 
   console.log(`\n${'='.repeat(70)}`);
-  console.log(`  MONITOR SCAN #${scanCount} | ${timestamp()}`);
-  console.log(`  Users: ${users.size} | Positions: ${totalPositions}`);
+  console.log(`  MONITOR SCAN #${scanCount} | ${ts()}`);
+  console.log(`  Users: ${registeredAddrs.length}`);
   console.log(`${'='.repeat(70)}`);
 
-  if (users.size === 0) {
+  if (registeredAddrs.length === 0) {
     console.log('  No users registered — waiting for delegations...');
     console.log(`${'='.repeat(70)}\n`);
     return;
   }
 
-  for (const [addr, user] of users) {
-    console.log(`\n  User: ${addr}`);
-    console.log(`  Registered: ${new Date(user.registeredAt).toISOString()}`);
-    console.log(`  Positions: ${user.positions.length}`);
+  // Auto-discover positions for all users via The Graph
+  for (const addr of registeredAddrs) {
+    try {
+      const discovered = await discoverPositions(addr);
+      const ids = discovered.map((p) => p.tokenId);
+      const prev = userPositions.get(addr) || [];
+      const prevSet = new Set(prev);
+      const added = ids.filter((id) => !prevSet.has(id));
+      if (added.length > 0) {
+        console.log(`  [discover] ${addr}: +${added.length} new position(s): ${added.join(', ')}`);
+      }
+      userPositions.set(addr, ids);
+      await updateUserStats(addr, { positionCount: ids.length, lastScanAt: Date.now() });
+    } catch (e: any) {
+      console.warn(`  [discover] ${addr}: error — ${e.message}`);
+    }
+  }
 
-    for (const tokenId of user.positions) {
+  const totalPositions = Array.from(userPositions.values()).reduce((s, p) => s + p.length, 0);
+  console.log(`  Positions after discovery: ${totalPositions}`);
+
+  for (const addr of registeredAddrs) {
+    const positions = userPositions.get(addr) || [];
+    console.log(`\n  User: ${addr} | Positions: ${positions.length}`);
+
+    for (const tokenId of positions) {
       console.log(`\n  --- Position #${tokenId} ---`);
 
       try {
-        // Read full position status from chain
         const status = await checkPositionStatus(BigInt(tokenId), config);
         const { position, pool, isInRange, ticksOutOfRange, percentOutOfRange } = status;
 
-        // Log detailed position info
         console.log(`  Pool: ${position.poolKey.currency0.slice(0, 10)}.../${position.poolKey.currency1.slice(0, 10)}...`);
-        console.log(`    Fee: ${position.poolKey.fee} | Tick Spacing: ${position.poolKey.tickSpacing}`);
-        console.log(`    Hooks: ${position.poolKey.hooks}`);
-        console.log(`  Position Range: [${position.tickLower}, ${position.tickUpper}]`);
-        console.log(`  Liquidity: ${position.liquidity.toString()}`);
-        console.log(`  Pool State:`);
-        console.log(`    Current Tick: ${pool.tick}`);
-        console.log(`    sqrtPriceX96: ${pool.sqrtPriceX96.toString()}`);
-        console.log(`    Pool Liquidity: ${pool.liquidity.toString()}`);
+        console.log(`    Fee: ${position.poolKey.fee} | Spacing: ${position.poolKey.tickSpacing}`);
+        console.log(`  Range: [${position.tickLower}, ${position.tickUpper}] | Liquidity: ${position.liquidity}`);
+        console.log(`  Pool tick: ${pool.tick} | sqrtPrice: ${pool.sqrtPriceX96}`);
 
         if (isInRange) {
-          const distToLower = pool.tick - position.tickLower;
-          const distToUpper = position.tickUpper - pool.tick;
           console.log(`  Status: IN RANGE`);
-          console.log(`    Distance to lower: ${distToLower} ticks | Distance to upper: ${distToUpper} ticks`);
-
-          trackAction({
+          await logActivity({
             type: 'monitor',
             status: 'completed',
             summary: `#${tokenId} in range (tick ${pool.tick} in [${position.tickLower}, ${position.tickUpper}])`,
+            timestamp: Date.now(),
             tokenId,
             owner: addr,
           });
         } else {
-          const direction = pool.tick < position.tickLower ? 'BELOW' : 'ABOVE';
-          console.log(`  Status: OUT OF RANGE (${direction})`);
-          console.log(`    ${ticksOutOfRange} ticks out (${percentOutOfRange.toFixed(1)}%)`);
+          const dir = pool.tick < position.tickLower ? 'BELOW' : 'ABOVE';
+          console.log(`  Status: OUT OF RANGE (${dir}) — ${ticksOutOfRange} ticks (${percentOutOfRange.toFixed(1)}%)`);
 
-          // Evaluate rebalance decision
           const decision = await evaluateRebalance(BigInt(tokenId), config);
 
           if (decision.shouldRebalance) {
-            console.log(`  -> REBALANCE TRIGGERED: ${decision.reason}`);
+            console.log(`  -> REBALANCE TRIGGERED`);
 
-            // Check if already rebalancing
             if (rebalancingInProgress.has(tokenId)) {
-              console.log(`  -> Rebalance already in progress, skipping`);
+              console.log(`  -> Already in progress, skipping`);
               continue;
             }
 
-            trackAction({
+            rebalancingInProgress.add(tokenId);
+
+            await logActivity({
               type: 'rebalance',
               status: 'in_progress',
               summary: `Auto-rebalancing #${tokenId}: ${decision.reason}`,
+              timestamp: Date.now(),
               tokenId,
               owner: addr,
             });
-
-            // Execute rebalance
-            rebalancingInProgress.add(tokenId);
 
             console.log(`\n  ${'~'.repeat(50)}`);
             console.log(`  EXECUTING REBALANCE for #${tokenId}`);
@@ -393,15 +397,29 @@ async function monitorPositions() {
 
               rebalancingInProgress.delete(tokenId);
 
+              // Persist rebalance record
+              await logRebalance({
+                tokenId,
+                owner: addr,
+                timestamp: Date.now(),
+                success: result.success,
+                txHash: result.txHash,
+                blockNumber: result.blockNumber?.toString(),
+                newRange: result.newRange,
+                error: result.error,
+                details: result.details,
+              });
+
               if (result.success) {
                 console.log(`  REBALANCE COMPLETE for #${tokenId}`);
                 console.log(`    New range: [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`);
                 console.log(`    TX: ${result.txHash}`);
 
-                trackAction({
+                await logActivity({
                   type: 'rebalance',
                   status: 'completed',
                   summary: `Rebalanced #${tokenId} -> [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`,
+                  timestamp: Date.now(),
                   tokenId,
                   owner: addr,
                   txHashes: result.txHash ? [result.txHash] : [],
@@ -409,10 +427,11 @@ async function monitorPositions() {
               } else {
                 console.log(`  REBALANCE FAILED for #${tokenId}: ${result.error}`);
 
-                trackAction({
+                await logActivity({
                   type: 'rebalance',
                   status: 'failed',
                   summary: `Rebalance #${tokenId} failed: ${result.error}`,
+                  timestamp: Date.now(),
                   tokenId,
                   owner: addr,
                 });
@@ -421,10 +440,19 @@ async function monitorPositions() {
               rebalancingInProgress.delete(tokenId);
               console.error(`  REBALANCE ERROR for #${tokenId}: ${rebalErr.message}`);
 
-              trackAction({
+              await logRebalance({
+                tokenId,
+                owner: addr,
+                timestamp: Date.now(),
+                success: false,
+                error: rebalErr.message,
+              });
+
+              await logActivity({
                 type: 'rebalance',
                 status: 'failed',
                 summary: `Rebalance #${tokenId} error: ${rebalErr.message}`,
+                timestamp: Date.now(),
                 tokenId,
                 owner: addr,
               });
@@ -433,10 +461,11 @@ async function monitorPositions() {
             console.log(`  ${'~'.repeat(50)}\n`);
           } else {
             console.log(`  -> No rebalance needed: ${decision.reason}`);
-            trackAction({
+            await logActivity({
               type: 'monitor',
               status: 'completed',
               summary: `#${tokenId} out of range but below threshold: ${decision.reason}`,
+              timestamp: Date.now(),
               tokenId,
               owner: addr,
             });
@@ -444,10 +473,11 @@ async function monitorPositions() {
         }
       } catch (e: any) {
         console.error(`  ERROR reading position #${tokenId}: ${e.message}`);
-        trackAction({
+        await logActivity({
           type: 'monitor',
           status: 'failed',
           summary: `Error monitoring #${tokenId}: ${e.message}`,
+          timestamp: Date.now(),
           tokenId,
           owner: addr,
         });
@@ -456,7 +486,7 @@ async function monitorPositions() {
   }
 
   console.log(`\n${'='.repeat(70)}`);
-  console.log(`  SCAN #${scanCount} COMPLETE | ${timestamp()}`);
+  console.log(`  SCAN #${scanCount} COMPLETE | ${ts()}`);
   console.log(`  Next scan in ${MONITOR_INTERVAL / 1000}s`);
   console.log(`${'='.repeat(70)}\n`);
 }
@@ -465,7 +495,9 @@ async function monitorPositions() {
 // Start
 // ---------------------------------------------------------------------------
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
+  const redisOk = await checkRedisConnection();
+
   console.log(`\n${'='.repeat(50)}`);
   console.log(`  ALMA Agent Backend`);
   console.log(`${'='.repeat(50)}`);
@@ -473,10 +505,14 @@ const server = app.listen(PORT, () => {
   console.log(`  Chain:   ${config.name} (${config.chainId})`);
   console.log(`  API:     http://localhost:${PORT}`);
   console.log(`  Monitor: every ${MONITOR_INTERVAL / 1000}s`);
+  console.log(`  Redis:   ${redisOk ? 'connected' : 'FAILED'}`);
   console.log(`  Key Hash: ${computeKeyHash(agentAccount.address)}`);
   console.log(`${'='.repeat(50)}\n`);
 
-  // Run first scan immediately, then every MONITOR_INTERVAL
+  if (!redisOk) {
+    console.error('Redis connection failed — data will not be persisted!');
+  }
+
   monitorPositions();
   setInterval(monitorPositions, MONITOR_INTERVAL);
 });
@@ -485,7 +521,6 @@ server.on('error', (err) => {
   console.error('Server error:', err);
 });
 
-// Keep process alive
 process.on('uncaughtException', (err) => {
   console.error('Uncaught:', err);
 });

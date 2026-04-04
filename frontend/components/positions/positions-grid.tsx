@@ -12,17 +12,35 @@ import { DelegationStepper } from "@/components/delegation/delegation-stepper";
 const PAGE_SIZE = 9;
 const GRID_SLOTS = 9;
 
-function formatTotalValue(
-  positions: { metrics?: { positionSizeUSD: number } }[]
-): string {
-  const total = positions.reduce(
-    (sum, p) => sum + (p.metrics?.positionSizeUSD ?? 0),
-    0
-  );
+function formatUSD(total: number): string {
   if (total === 0) return "$0.00";
   if (total >= 1_000_000) return `$${(total / 1_000_000).toFixed(2)}M`;
   if (total >= 1_000) return `$${(total / 1_000).toFixed(2)}K`;
   return `$${total.toFixed(2)}`;
+}
+
+function formatTotalValue(
+  positions: { metrics?: { positionSizeUSD: number } }[]
+): string {
+  return formatUSD(positions.reduce((sum, p) => sum + (p.metrics?.positionSizeUSD ?? 0), 0));
+}
+
+function estimateDailyYield(
+  positions: { metrics?: { feesEarnedUSD: number; apyEstimate: number | null; positionSizeUSD: number } }[]
+): string {
+  let dailyYield = 0;
+  for (const p of positions) {
+    const m = p.metrics;
+    if (!m) continue;
+    if (m.feesEarnedUSD > 0) {
+      // Use actual fees (assume 30-day accumulation)
+      dailyYield += m.feesEarnedUSD / 30;
+    } else if (m.apyEstimate && m.positionSizeUSD > 0) {
+      // Use APY estimate
+      dailyYield += (m.apyEstimate / 100 / 365) * m.positionSizeUSD;
+    }
+  }
+  return formatUSD(dailyYield);
 }
 
 export function PositionsGrid() {
@@ -45,6 +63,7 @@ export function PositionsGrid() {
   const startIdx = page * PAGE_SIZE;
   const pagePositions = positions.slice(startIdx, startIdx + PAGE_SIZE);
   const totalValue = formatTotalValue(positions);
+  const dailyYield = estimateDailyYield(positions);
 
   type Slot =
     | { type: "position"; position: (typeof positions)[0] }
@@ -92,6 +111,17 @@ export function PositionsGrid() {
             transition={{ delay: 0.3, duration: 0.4 }}
             className="flex items-center gap-3"
           >
+            <div className="text-right mr-1">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">
+                Yield / Day
+              </div>
+              <div className="text-lg font-semibold tracking-tight mt-0.5 text-green-500/80">
+                {dailyYield}
+              </div>
+            </div>
+
+            <div className="w-px h-8 bg-border/30 mx-2" />
+
             <div className="text-right mr-2">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">
                 Total Value
