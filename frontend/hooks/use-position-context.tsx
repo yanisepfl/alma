@@ -164,15 +164,17 @@ export function PositionProvider({ children }: { children: ReactNode }) {
 
     (async () => {
       try {
-        // Query ERC-721 Transfer events TO this address (position mints + transfers in)
+        // Query ERC-721 Transfer events TO this address (last ~100k blocks)
         const transferEvent = parseAbiItem(
           "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
         );
+        const currentBlock = await publicClient.getBlockNumber();
+        const fromBlock = currentBlock > 100000n ? currentBlock - 100000n : 0n;
         const logs = await publicClient.getLogs({
           address: POSITION_MANAGER,
           event: transferEvent,
           args: { to: address },
-          fromBlock: 0n,
+          fromBlock,
           toBlock: "latest",
         });
 

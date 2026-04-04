@@ -36,6 +36,11 @@ export function ChatShell() {
         <ConnectButton />
       </div>
 
+      <div className="absolute bottom-3 right-4 z-20 flex items-center gap-3">
+        <a href="#" className="text-[10px] text-muted-foreground/30 hover:text-muted-foreground/50 transition-colors">Documentation</a>
+        <a href="#" className="text-[10px] text-muted-foreground/30 hover:text-muted-foreground/50 transition-colors">Twitter</a>
+      </div>
+
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
         {selectedPosition ? (
           <div className="flex-1 overflow-y-auto">

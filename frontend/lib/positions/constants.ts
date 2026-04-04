@@ -62,9 +62,15 @@ export const STATE_VIEW_ABI = [
 ] as const;
 
 export const TOKEN_SYMBOLS: Record<string, string> = {
+  // Sepolia
   "0x0000000000000000000000000000000000000000": "ETH",
   "0xfff9976782d46cc05630d1f6ebab18b2324d6b14": "WETH",
   "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238": "USDC",
+  // Base
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
+  "0x820c137fa70c8691f0e44dc420a5e53c168921dc": "USDS",
+  "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf": "cbBTC",
+  "0x4200000000000000000000000000000000000006": "WETH",
 };
 
 export const QUIRKY_MESSAGES = [

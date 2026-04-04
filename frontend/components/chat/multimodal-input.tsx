@@ -90,7 +90,7 @@ function PureMultimodalInput({
       )}
 
       <PromptInput
-        className="[&>div]:rounded-2xl [&>div]:border [&>div]:border-border/20 [&>div]:bg-card/70 [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:ring-0 [&_[data-slot=input-group]]:shadow-none [&_[data-slot=input-group]]:focus-within:ring-0 [&_[data-slot=input-group]]:focus-within:shadow-none"
+        className="[&>div]:rounded-2xl [&>div]:border [&>div]:border-border/20 [&>div]:bg-card/70 [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:ring-0 [&_[data-slot=input-group]]:shadow-none [&_[data-slot=input-group]]:transition-none [&_[data-slot=input-group]]:focus-within:ring-0 [&_[data-slot=input-group]]:focus-within:shadow-none [&_[data-slot=input-group]]:focus-within:border-0"
         onSubmit={() => {
           if (!input.trim()) return;
           if (status === "ready" || status === "error") {

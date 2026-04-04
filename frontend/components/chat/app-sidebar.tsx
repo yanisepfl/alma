@@ -3,14 +3,40 @@
 import { PlusIcon } from "lucide-react";
 import Image from "next/image";
 import { useState } from "react";
-import { useAccount } from "wagmi";
 import { usePositionContext } from "@/hooks/use-position-context";
 import { cn } from "@/lib/utils";
 
+function StatusDot({ inRange }: { inRange: boolean }) {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+      <circle
+        cx="5"
+        cy="5"
+        r="5"
+        fill="currentColor"
+        fillOpacity="0.4"
+        className={inRange ? "text-green-500" : "text-red-500"}
+      />
+      <circle
+        cx="5"
+        cy="5"
+        r="2.5"
+        fill="currentColor"
+        className={inRange ? "text-green-500" : "text-red-500"}
+      />
+    </svg>
+  );
+}
+
 export function AppSidebar() {
-  const { address } = useAccount();
-  const { positions, selectedPosition, selectPosition, clearSelection, loadPosition, isLoading } =
-    usePositionContext();
+  const {
+    positions,
+    selectedPosition,
+    selectPosition,
+    clearSelection,
+    loadPosition,
+    isLoading,
+  } = usePositionContext();
   const [tokenIdInput, setTokenIdInput] = useState("");
 
   return (
@@ -36,7 +62,7 @@ export function AppSidebar() {
 
       {/* Positions label */}
       {positions.length > 0 && (
-        <div className="px-4 pb-1">
+        <div className="px-4 pb-1.5">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">
             Positions
           </span>
@@ -44,48 +70,74 @@ export function AppSidebar() {
       )}
 
       {/* Position list */}
-      <div className="flex-1 overflow-y-auto px-2">
-        {!address && (
+      <div className="flex-1 overflow-y-auto px-2 space-y-1.5">
+        {positions.length === 0 && (
           <p className="px-2 pt-2 text-xs text-muted-foreground/50">
             Connect wallet to view positions
           </p>
         )}
 
-        {positions.length === 0 && address && (
-          <p className="px-2 pt-2 text-xs text-muted-foreground/50">
-            No positions found
-          </p>
-        )}
+        {positions.map((pos) => {
+          const range = pos.tickUpper - pos.tickLower;
+          const padding = range * 0.15;
+          const viewMin = pos.tickLower - padding;
+          const viewRange = range + padding * 2;
+          const barStart =
+            ((pos.tickLower - viewMin) / viewRange) * 100;
+          const barEnd =
+            ((pos.tickUpper - viewMin) / viewRange) * 100;
+          const tickPos = Math.max(
+            0,
+            Math.min(
+              100,
+              ((pos.pool.currentTick - viewMin) / viewRange) * 100
+            )
+          );
 
-        {positions.map((pos) => (
-          <button
-            key={pos.tokenId}
-            onClick={() => selectPosition(pos.tokenId)}
-            className={cn(
-              "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors cursor-pointer",
-              selectedPosition?.tokenId === pos.tokenId
-                ? "bg-muted/60 text-foreground"
-                : "text-muted-foreground hover:bg-muted/30 hover:text-foreground"
-            )}
-          >
-            <span
+          return (
+            <button
+              key={pos.tokenId}
+              onClick={() => selectPosition(pos.tokenId)}
               className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                pos.isInRange
-                  ? "bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.6)] animate-pulse"
-                  : "bg-red-400 shadow-[0_0_4px_rgba(248,113,113,0.6)] animate-pulse"
+                "flex w-full flex-col gap-2 rounded-lg border p-3 text-left transition-colors cursor-pointer",
+                selectedPosition?.tokenId === pos.tokenId
+                  ? "border-border/60 bg-muted/40 text-foreground"
+                  : "border-border/20 text-muted-foreground hover:border-border/40 hover:bg-muted/20 hover:text-foreground"
               )}
-            />
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-medium truncate">
-                {pos.token0Symbol} / {pos.token1Symbol}
+            >
+              {/* Top row: token pair + status dot */}
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-sm font-medium">
+                    {pos.token0Symbol} / {pos.token1Symbol}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground/40 mt-0.5">
+                    {pos.isInRange ? "In Range" : "Out of Range"}
+                  </div>
+                </div>
+                <StatusDot inRange={pos.isInRange} />
               </div>
-              <div className="text-[10px] text-muted-foreground/50">
-                #{pos.tokenId}
+
+              {/* Mini range bar */}
+              <div className="w-full h-1 rounded-full bg-muted/60 relative mt-1">
+                <div
+                  className="absolute h-full rounded-full bg-foreground/10"
+                  style={{
+                    left: `${barStart}%`,
+                    width: `${Math.max(1, barEnd - barStart)}%`,
+                  }}
+                />
+                <div
+                  className={cn(
+                    "absolute top-1/2 -translate-y-1/2 size-1.5 rounded-full",
+                    pos.isInRange ? "bg-green-500" : "bg-red-500"
+                  )}
+                  style={{ left: `${tickPos}%` }}
+                />
               </div>
-            </div>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
 
       {/* Bottom: Add position + Create new */}
@@ -120,7 +172,7 @@ export function AppSidebar() {
           href="https://app.uniswap.org/positions/create/v4"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex w-full items-center gap-2 rounded-lg border border-border/40 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/30 cursor-pointer"
+          className="flex w-full items-center gap-2 rounded-lg border border-border/40 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/20 cursor-pointer"
         >
           <PlusIcon className="size-3.5" />
           <span>Create new position</span>
