@@ -223,11 +223,9 @@ function PriceChart({
         ))}
         {/* Rebalance dots */}
         {rebalanceDots.map((dot, i) => (
-          <circle key={`reb-${i}`} cx={dot.x} cy={dot.y} r="3"
-            fill="#22c55e" fillOpacity="0.7"
-            stroke="#22c55e" strokeWidth="1" strokeOpacity="0.3"
-            vectorEffect="non-scaling-stroke"
-            style={{ paintOrder: "stroke" }} />
+          <line key={`reb-${i}`} x1={dot.x} y1="0" x2={dot.x} y2="100"
+            stroke="#22c55e" strokeWidth="1" strokeOpacity="0.4" strokeDasharray="2,3"
+            vectorEffect="non-scaling-stroke" />
         ))}
         {/* Hover crosshair */}
         {hover && (
@@ -237,7 +235,7 @@ function PriceChart({
         )}
       </svg>
 
-      {/* Rebalance dot legend */}
+      {/* Rebalance legend */}
       {rebalanceDots.length > 0 && (
         <div className="absolute bottom-1 left-1 flex items-center gap-1 pointer-events-none">
           <div className="size-1.5 rounded-full bg-green-500/70" />
