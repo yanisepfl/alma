@@ -7,7 +7,7 @@ import {
   CheckCircleIcon,
   AlertCircleIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { EnrichedPosition } from "@/lib/positions/types";
 import { usePoolPrices, type PricePoint, type Duration } from "@/hooks/use-pool-prices";
 import { usePositionContext } from "@/hooks/use-position-context";
@@ -61,7 +61,6 @@ function PriceChart({
   currentTick,
   token0Symbol,
   token1Symbol,
-  rebalances,
 }: {
   prices: PricePoint[];
   tickLower: number;
@@ -69,7 +68,6 @@ function PriceChart({
   currentTick: number;
   token0Symbol: string;
   token1Symbol: string;
-  rebalances: RebalanceRecord[];
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ x: number; price: number; time: number } | null>(null);
@@ -154,22 +152,6 @@ function PriceChart({
   const rangeBotY = priceToY(lowerPrice);
   const hoverY = hover ? priceToY(hover.price) : 0;
 
-  // Map rebalance timestamps to x positions on chart
-  const chartStartTime = prices[0].timestamp;
-  const chartEndTime = prices[prices.length - 1].timestamp;
-  const chartTimeRange = chartEndTime - chartStartTime || 1;
-  const rebalanceDots = rebalances
-    .filter((r) => r.success && r.timestamp / 1000 >= chartStartTime && r.timestamp / 1000 <= chartEndTime)
-    .map((r) => {
-      const tSec = r.timestamp / 1000;
-      const xPct = ((tSec - chartStartTime) / chartTimeRange) * 100;
-      // Find nearest price point
-      const idx = Math.round(((tSec - chartStartTime) / chartTimeRange) * (prices.length - 1));
-      const nearestPrice = prices[Math.max(0, Math.min(idx, prices.length - 1))]?.token0Price ?? 0;
-      const yPct = priceToY(nearestPrice);
-      return { x: xPct, y: yPct, time: tSec };
-    });
-
   const STABLES = ["USDC", "USDS", "USDT", "DAI"];
   const isUSDPair = STABLES.includes(token1Symbol) || STABLES.includes(token0Symbol);
   const formatPrice = (p: number) => p >= 1 ? p.toFixed(2) : p.toFixed(6);
@@ -235,11 +217,6 @@ function PriceChart({
             strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
         ))}
         {/* Rebalance dots */}
-        {rebalanceDots.map((dot, i) => (
-          <line key={`reb-${i}`} x1={dot.x} y1="0" x2={dot.x} y2="100"
-            stroke="#22c55e" strokeWidth="1" strokeOpacity="0.4" strokeDasharray="2,3"
-            vectorEffect="non-scaling-stroke" />
-        ))}
         {/* Hover crosshair */}
         {hover && (
           <line x1={hover.x} y1="0" x2={hover.x} y2="100"
@@ -248,13 +225,6 @@ function PriceChart({
         )}
       </svg>
 
-      {/* Rebalance legend */}
-      {rebalanceDots.length > 0 && (
-        <div className="absolute bottom-1 left-1 flex items-center gap-1 pointer-events-none">
-          <div className="size-1.5 rounded-full bg-green-500/70" />
-          <span className="text-[8px] text-muted-foreground/40">rebalance</span>
-        </div>
-      )}
     </div>
   );
 }
@@ -407,29 +377,11 @@ export function PositionDashboard({
   const m = position.metrics;
   const [duration, setDuration] = useState<Duration>("WEEK");
   const { prices } = usePoolPrices(position.pool.poolId, duration);
-  const { positions, clearSelection } = usePositionContext();
+  const { clearSelection } = usePositionContext();
   const { address } = useAccount();
   const [activeTab, setActiveTab] = useState<"rebalances" | "activity">("rebalances");
   const [rebalanceRecords, setRebalanceRecords] = useState<RebalanceRecord[]>([]);
 
-  // All tokenIds that belong to the same pool as this position
-  const poolTokenIds = useMemo(() => {
-    const c0 = position.poolKey.currency0.toLowerCase();
-    const c1 = position.poolKey.currency1.toLowerCase();
-    const fee = position.poolKey.fee;
-    const ids = new Set<string>();
-    ids.add(position.tokenId);
-    for (const p of positions) {
-      if (
-        p.poolKey.currency0.toLowerCase() === c0 &&
-        p.poolKey.currency1.toLowerCase() === c1 &&
-        p.poolKey.fee === fee
-      ) {
-        ids.add(p.tokenId);
-      }
-    }
-    return ids;
-  }, [position, positions]);
 
   // Fetch rebalance records (shared between chart dots and table)
   useEffect(() => {
@@ -439,14 +391,14 @@ export function PositionDashboard({
       fetch(`${API_URL}/api/rebalances?${params}`)
         .then((r) => r.json())
         .then((data: RebalanceRecord[]) => {
-          if (Array.isArray(data)) setRebalanceRecords(data.filter((r) => poolTokenIds.has(r.tokenId)));
+          if (Array.isArray(data)) setRebalanceRecords(data);
         })
         .catch(() => {});
     };
     fetchRebalances();
     const interval = setInterval(fetchRebalances, 30_000);
     return () => clearInterval(interval);
-  }, [address, poolTokenIds]);
+  }, [address]);
 
   return (
     <div className="mx-auto w-full max-w-4xl px-6 py-6">
@@ -525,7 +477,6 @@ export function PositionDashboard({
                 currentTick={position.pool.currentTick}
                 token0Symbol={position.token0Symbol}
                 token1Symbol={position.token1Symbol}
-                rebalances={rebalanceRecords}
               />
             </div>
           </motion.div>
