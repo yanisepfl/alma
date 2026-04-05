@@ -73,7 +73,7 @@ export interface RebalanceThresholds {
 }
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
-  minPercentOutOfRange: 5,
+  minPercentOutOfRange: 0.1,
   minLiquidity: 0n,
 };
 
