@@ -150,7 +150,13 @@ pnpm run dev           # starts on http://localhost:3000
 
 ## On-Chain Proof
 
-*Transaction IDs demonstrating full rebalance flow will be added here.*
+**EIP-7702 Delegation:**
+- [`0x3512212f...`](https://basescan.org/tx/0x3512212fe4a322714ed18c32fcb05ab98a8533e20b6134732be42cc355551d20) — User delegates to Calibur, registers ALMA agent key, configures GuardedExecutorHook whitelist
+
+**Autonomous Rebalances:**
+- [`0xb8ac1fdb...`](https://basescan.org/tx/0xb8ac1fdbba841d5b9c84daa906eca092f34b2da2000498e8e16ba51b26416540) — Burn → swap → mint in a single atomic batch
+- [`0x9fe2eba5...`](https://basescan.org/tx/0x9fe2eba5045228deedb688b126c344dbbbd8a4eb1214b4e9ff2d7f084e71ab17) — Burn → swap → mint in a single atomic batch
+- [`0x87a4aacd...`](https://basescan.org/tx/0x87a4aacd7c92ecf5d2b7c8878c08ca4a71e1d0e011f1d30a4e93c019f1114431) — Burn → swap → mint in a single atomic batch
 
 ## Future Work
 
