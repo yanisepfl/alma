@@ -295,7 +295,7 @@ export async function executeRebalance(params: {
           amount1: postSwapAmount1,
           recipient: userEOA,
           deadlineTimestamp,
-          slippageBps,
+          slippageBps: Math.max(slippageBps, 500),
         });
         if (mint.liquidity !== '0') break;
         log(`  Liquidity is 0, trying narrower range...`);

@@ -223,31 +223,29 @@ export async function buildMintCalldata(params: {
 
   const v4Pool = await buildV4Pool(syntheticPosition, pool, config);
 
-  // Determine which token has the larger amount to use as the input side
-  // This matches the Alphix frontend pattern (fromAmount0 / fromAmount1)
+  // Use the binding constraint: create from both sides and pick the smaller liquidity
+  // This ensures we never try to transfer more tokens than we actually have
   let v4Position: V4Position;
   if (amount0 > 0n && amount1 > 0n) {
-    // Both tokens available — use amount0 as primary
-    v4Position = V4Position.fromAmount0({
-      pool: v4Pool,
-      tickLower,
-      tickUpper,
+    const pos0 = V4Position.fromAmount0({
+      pool: v4Pool, tickLower, tickUpper,
       amount0: JSBI.BigInt(amount0.toString()),
       useFullPrecision: true,
     });
+    const pos1 = V4Position.fromAmount1({
+      pool: v4Pool, tickLower, tickUpper,
+      amount1: JSBI.BigInt(amount1.toString()),
+    });
+    v4Position = JSBI.lessThanOrEqual(pos0.liquidity, pos1.liquidity) ? pos0 : pos1;
   } else if (amount0 > 0n) {
     v4Position = V4Position.fromAmount0({
-      pool: v4Pool,
-      tickLower,
-      tickUpper,
+      pool: v4Pool, tickLower, tickUpper,
       amount0: JSBI.BigInt(amount0.toString()),
       useFullPrecision: true,
     });
   } else {
     v4Position = V4Position.fromAmount1({
-      pool: v4Pool,
-      tickLower,
-      tickUpper,
+      pool: v4Pool, tickLower, tickUpper,
       amount1: JSBI.BigInt(amount1.toString()),
     });
   }
