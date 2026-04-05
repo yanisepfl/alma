@@ -332,10 +332,19 @@ function getRangeMultiplier(risk: string): number {
 const MONITOR_INTERVAL = 60_000;
 let scanCount = 0;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+interface RebalanceTarget {
+  tokenId: string;
+  owner: string;
+  decision: Awaited<ReturnType<typeof evaluateRebalance>>;
+  rangeMultiplier: number;
+  slippageBps: number;
+}
+
 async function monitorPositions() {
   scanCount++;
 
-  // Load registered users from Redis
   const registeredAddrs = await getRegisteredUsers();
 
   console.log(`\n${'='.repeat(70)}`);
@@ -349,7 +358,7 @@ async function monitorPositions() {
     return;
   }
 
-  // Auto-discover positions for all users via The Graph
+  // ─── PHASE 1: Discover positions ──────────────────────────────────────
   for (const addr of registeredAddrs) {
     try {
       const discovered = await discoverPositions(addr);
@@ -367,186 +376,126 @@ async function monitorPositions() {
     }
   }
 
-  const totalPositions = Array.from(userPositions.values()).reduce((s, p) => s + p.length, 0);
-  console.log(`  Positions after discovery: ${totalPositions}`);
+  // ─── PHASE 2: Scan all positions, collect rebalance targets ───────────
+  const targets: RebalanceTarget[] = [];
 
   for (const addr of registeredAddrs) {
     const positions = userPositions.get(addr) || [];
     const userSettings = await getUserSettings(addr);
     const rangeMultiplier = getRangeMultiplier(userSettings.riskProfile);
-    console.log(`\n  User: ${addr} | Positions: ${positions.length} | Risk: ${userSettings.riskProfile} | Slippage: ${userSettings.maxSlippage}bps | Auto: ${userSettings.autoRebalance}`);
+    console.log(`\n  User: ${addr} | Positions: ${positions.length} | Risk: ${userSettings.riskProfile} | Slippage: ${userSettings.maxSlippage}bps`);
 
     for (const tokenId of positions) {
-      console.log(`\n  --- Position #${tokenId} ---`);
-
       try {
         const status = await checkPositionStatus(BigInt(tokenId), config);
         const { position, pool, isInRange, ticksOutOfRange, percentOutOfRange } = status;
 
-        // Skip burned/empty positions silently
-        if (position.liquidity === 0n) {
-          continue;
-        }
-
-        console.log(`  Pool: ${position.poolKey.currency0.slice(0, 10)}.../${position.poolKey.currency1.slice(0, 10)}...`);
-        console.log(`    Fee: ${position.poolKey.fee} | Spacing: ${position.poolKey.tickSpacing}`);
-        console.log(`  Range: [${position.tickLower}, ${position.tickUpper}] | Liquidity: ${position.liquidity}`);
-        console.log(`  Pool tick: ${pool.tick} | sqrtPrice: ${pool.sqrtPriceX96}`);
+        if (position.liquidity === 0n) continue;
 
         if (isInRange) {
-          console.log(`  Status: IN RANGE`);
-          await logActivity({
-            type: 'monitor',
-            status: 'completed',
-            summary: `#${tokenId} in range (tick ${pool.tick} in [${position.tickLower}, ${position.tickUpper}])`,
-            timestamp: Date.now(),
-            tokenId,
-            owner: addr,
-          });
+          console.log(`  #${tokenId}: IN RANGE`);
         } else {
           const dir = pool.tick < position.tickLower ? 'BELOW' : 'ABOVE';
-          console.log(`  Status: OUT OF RANGE (${dir}) — ${ticksOutOfRange} ticks (${percentOutOfRange.toFixed(1)}%)`);
+          console.log(`  #${tokenId}: OOR ${dir} — ${ticksOutOfRange} ticks (${percentOutOfRange.toFixed(1)}%)`);
 
-          if (!userSettings.autoRebalance) {
-            console.log(`  -> Auto-rebalance DISABLED for this user, skipping`);
-            await logActivity({
-              type: 'monitor',
-              status: 'completed',
-              summary: `#${tokenId} out of range but auto-rebalance disabled`,
-              timestamp: Date.now(),
-              tokenId,
-              owner: addr,
-            });
-            continue;
-          }
+          if (!userSettings.autoRebalance) continue;
 
           const decision = await evaluateRebalance(BigInt(tokenId), config);
-
-          if (decision.shouldRebalance) {
-            console.log(`  -> REBALANCE TRIGGERED (rangeMultiplier=${rangeMultiplier}, slippage=${userSettings.maxSlippage}bps)`);
-
-            if (rebalancingInProgress.has(tokenId)) {
-              console.log(`  -> Already in progress, skipping`);
-              continue;
-            }
-
-            rebalancingInProgress.add(tokenId);
-
-            await logActivity({
-              type: 'rebalance',
-              status: 'in_progress',
-              summary: `Auto-rebalancing #${tokenId}: ${decision.reason}`,
-              timestamp: Date.now(),
-              tokenId,
-              owner: addr,
-            });
-
-            console.log(`\n  ${'~'.repeat(50)}`);
-            console.log(`  EXECUTING REBALANCE for #${tokenId}`);
-            console.log(`  ${'~'.repeat(50)}`);
-
-            try {
-              const result = await executeRebalance({
-                tokenId: BigInt(tokenId),
-                userEOA: addr as Address,
-                decision,
-                config,
-                agentAccount,
-                walletClient,
-                publicClient,
-                uniswapApi,
-                rangeWidthMultiplier: rangeMultiplier,
-                slippageBps: userSettings.maxSlippage,
-              });
-
-              rebalancingInProgress.delete(tokenId);
-
-              // Persist rebalance record
-              await logRebalance({
-                tokenId,
-                owner: addr,
-                timestamp: Date.now(),
-                success: result.success,
-                txHash: result.txHash,
-                blockNumber: result.blockNumber?.toString(),
-                newRange: result.newRange,
-                error: result.error,
-                details: result.details,
-              });
-
-              if (result.success) {
-                console.log(`  REBALANCE COMPLETE for #${tokenId}`);
-                console.log(`    New range: [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`);
-                console.log(`    TX: ${result.txHash}`);
-
-                await logActivity({
-                  type: 'rebalance',
-                  status: 'completed',
-                  summary: `Rebalanced #${tokenId} -> [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`,
-                  timestamp: Date.now(),
-                  tokenId,
-                  owner: addr,
-                  txHashes: result.txHash ? [result.txHash] : [],
-                });
-              } else {
-                console.log(`  REBALANCE FAILED for #${tokenId}: ${result.error}`);
-
-                await logActivity({
-                  type: 'rebalance',
-                  status: 'failed',
-                  summary: `Rebalance #${tokenId} failed: ${result.error}`,
-                  timestamp: Date.now(),
-                  tokenId,
-                  owner: addr,
-                });
-              }
-            } catch (rebalErr: any) {
-              rebalancingInProgress.delete(tokenId);
-              console.error(`  REBALANCE ERROR for #${tokenId}: ${rebalErr.message}`);
-
-              await logRebalance({
-                tokenId,
-                owner: addr,
-                timestamp: Date.now(),
-                success: false,
-                error: rebalErr.message,
-              });
-
-              await logActivity({
-                type: 'rebalance',
-                status: 'failed',
-                summary: `Rebalance #${tokenId} error: ${rebalErr.message}`,
-                timestamp: Date.now(),
-                tokenId,
-                owner: addr,
-              });
-            }
-
-            console.log(`  ${'~'.repeat(50)}\n`);
-          } else {
-            console.log(`  -> No rebalance needed: ${decision.reason}`);
-            await logActivity({
-              type: 'monitor',
-              status: 'completed',
-              summary: `#${tokenId} out of range but below threshold: ${decision.reason}`,
-              timestamp: Date.now(),
-              tokenId,
-              owner: addr,
-            });
+          if (decision.shouldRebalance && !rebalancingInProgress.has(tokenId)) {
+            targets.push({ tokenId, owner: addr, decision, rangeMultiplier, slippageBps: userSettings.maxSlippage });
           }
         }
       } catch (e: any) {
-        console.error(`  ERROR reading position #${tokenId}: ${e.message}`);
-        await logActivity({
-          type: 'monitor',
-          status: 'failed',
-          summary: `Error monitoring #${tokenId}: ${e.message}`,
-          timestamp: Date.now(),
-          tokenId,
-          owner: addr,
-        });
+        console.error(`  #${tokenId}: ERROR — ${e.message}`);
       }
     }
+  }
+
+  // ─── PHASE 3: Execute rebalances one by one with delay + retry ────────
+  if (targets.length > 0) {
+    console.log(`\n  >> ${targets.length} rebalance(s) queued`);
+  }
+
+  for (let i = 0; i < targets.length; i++) {
+    const { tokenId, owner, decision, rangeMultiplier, slippageBps } = targets[i];
+
+    if (i > 0) {
+      console.log(`  >> Waiting 15s before next rebalance...`);
+      await sleep(15_000);
+    }
+
+    rebalancingInProgress.add(tokenId);
+    await logActivity({ type: 'rebalance', status: 'in_progress', summary: `Auto-rebalancing #${tokenId}`, timestamp: Date.now(), tokenId, owner });
+
+    console.log(`\n  ${'~'.repeat(50)}`);
+    console.log(`  EXECUTING REBALANCE ${i + 1}/${targets.length} for #${tokenId}`);
+    console.log(`  ${'~'.repeat(50)}`);
+
+    let success = false;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (attempt > 1) {
+        console.log(`  >> Retry attempt ${attempt} for #${tokenId}...`);
+        await sleep(10_000);
+      }
+
+      try {
+        const result = await executeRebalance({
+          tokenId: BigInt(tokenId),
+          userEOA: owner as Address,
+          decision,
+          config,
+          agentAccount,
+          walletClient,
+          publicClient,
+          uniswapApi,
+          rangeWidthMultiplier: rangeMultiplier,
+          slippageBps,
+        });
+
+        await logRebalance({
+          tokenId, owner, timestamp: Date.now(),
+          success: result.success, txHash: result.txHash,
+          blockNumber: result.blockNumber?.toString(),
+          newRange: result.newRange, error: result.error, details: result.details,
+        });
+
+        if (result.success) {
+          console.log(`  REBALANCE COMPLETE for #${tokenId}`);
+          console.log(`    New range: [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`);
+          console.log(`    TX: ${result.txHash}`);
+          await logActivity({
+            type: 'rebalance', status: 'completed',
+            summary: `Rebalanced #${tokenId} -> [${result.newRange?.tickLower}, ${result.newRange?.tickUpper}]`,
+            timestamp: Date.now(), tokenId, owner,
+            txHashes: result.txHash ? [result.txHash] : [],
+          });
+          success = true;
+          break;
+        } else {
+          console.log(`  REBALANCE FAILED for #${tokenId}: ${result.error}`);
+          if (attempt === 2) {
+            await logActivity({
+              type: 'rebalance', status: 'failed',
+              summary: `Rebalance #${tokenId} failed after retry: ${result.error}`,
+              timestamp: Date.now(), tokenId, owner,
+            });
+          }
+        }
+      } catch (rebalErr: any) {
+        console.error(`  REBALANCE ERROR for #${tokenId}: ${rebalErr.message}`);
+        if (attempt === 2) {
+          await logRebalance({ tokenId, owner, timestamp: Date.now(), success: false, error: rebalErr.message });
+          await logActivity({
+            type: 'rebalance', status: 'failed',
+            summary: `Rebalance #${tokenId} error: ${rebalErr.message}`,
+            timestamp: Date.now(), tokenId, owner,
+          });
+        }
+      }
+    }
+
+    rebalancingInProgress.delete(tokenId);
+    console.log(`  ${'~'.repeat(50)}\n`);
   }
 
   console.log(`\n${'='.repeat(70)}`);

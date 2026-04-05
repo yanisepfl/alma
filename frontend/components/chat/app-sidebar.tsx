@@ -99,7 +99,7 @@ export function AppSidebar() {
           const arr = Array.isArray(data) ? data : data?.actions;
           if (Array.isArray(arr)) {
             const filtered = arr.filter(
-              (a: AgentAction) => a.type !== "monitor"
+              (a: AgentAction) => a.type !== "monitor" && a.status !== "failed"
             );
             setActions(filtered);
           }
