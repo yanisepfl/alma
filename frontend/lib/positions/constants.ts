@@ -72,6 +72,8 @@ export const TOKEN_SYMBOLS: Record<string, string> = {
   "0x820c137fa70c8691f0e44dc420a5e53c168921dc": "USDS",
   "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf": "cbBTC",
   "0x4200000000000000000000000000000000000006": "WETH",
+  "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b": "VIRTUAL",
+  "0xc1cba3fcea344f92d9239c08c0568f6f2f0ee452": "wstETH",
 };
 
 export const QUIRKY_MESSAGES = [

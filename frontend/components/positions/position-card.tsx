@@ -11,6 +11,8 @@ const TOKEN_COLORS: Record<string, string> = {
   USDS: "#F5AC37",
   cbBTC: "#0052FF",
   USDT: "#26A17B",
+  VIRTUAL: "#7BEA62",
+  wstETH: "#00A3FF",
 };
 
 const DEFAULT_TOKEN_COLOR = "#6B7280";
