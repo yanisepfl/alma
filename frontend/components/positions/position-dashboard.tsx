@@ -58,6 +58,7 @@ function PriceChart({
   prices,
   tickLower,
   tickUpper,
+  currentTick,
   token0Symbol,
   token1Symbol,
   rebalances,
@@ -65,6 +66,7 @@ function PriceChart({
   prices: PricePoint[];
   tickLower: number;
   tickUpper: number;
+  currentTick: number;
   token0Symbol: string;
   token1Symbol: string;
   rebalances: RebalanceRecord[];
@@ -91,12 +93,12 @@ function PriceChart({
     );
   }
 
-  // Chart displays token0Price (token0 in terms of token1).
-  // Uniswap tick price: 1.0001^tick = token1/token0, so token0Price = 1 / 1.0001^tick
-  const tickToPriceNum = (tick: number) => 1 / Math.pow(1.0001, tick);
-  // Lower tick = lower token1/token0 = higher token0/token1, so we swap
-  const lowerPrice = tickToPriceNum(tickUpper);
-  const upperPrice = tickToPriceNum(tickLower);
+  const refPrice = priceValues[priceValues.length - 1];
+  const tickToPriceNum = (tick: number) => refPrice * Math.pow(1.0001, tick - currentTick);
+  const pA = tickToPriceNum(tickLower);
+  const pB = tickToPriceNum(tickUpper);
+  const lowerPrice = Math.min(pA, pB);
+  const upperPrice = Math.max(pA, pB);
 
   const minP = Math.min(...priceValues);
   const maxP = Math.max(...priceValues);
@@ -490,6 +492,7 @@ export function PositionDashboard({
                 prices={prices}
                 tickLower={position.tickLower}
                 tickUpper={position.tickUpper}
+                currentTick={position.pool.currentTick}
                 token0Symbol={position.token0Symbol}
                 token1Symbol={position.token1Symbol}
                 rebalances={rebalanceRecords}
