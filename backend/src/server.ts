@@ -383,6 +383,11 @@ async function monitorPositions() {
         const status = await checkPositionStatus(BigInt(tokenId), config);
         const { position, pool, isInRange, ticksOutOfRange, percentOutOfRange } = status;
 
+        // Skip burned/empty positions silently
+        if (position.liquidity === 0n) {
+          continue;
+        }
+
         console.log(`  Pool: ${position.poolKey.currency0.slice(0, 10)}.../${position.poolKey.currency1.slice(0, 10)}...`);
         console.log(`    Fee: ${position.poolKey.fee} | Spacing: ${position.poolKey.tickSpacing}`);
         console.log(`  Range: [${position.tickLower}, ${position.tickUpper}] | Liquidity: ${position.liquidity}`);
