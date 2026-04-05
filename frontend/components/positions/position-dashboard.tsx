@@ -7,7 +7,7 @@ import {
   CheckCircleIcon,
   AlertCircleIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EnrichedPosition } from "@/lib/positions/types";
 import { usePoolPrices, type PricePoint, type Duration } from "@/hooks/use-pool-prices";
 import { usePositionContext } from "@/hooks/use-position-context";
@@ -111,8 +111,14 @@ function PriceChart({
   const yRange = yMax - yMin || 1;
   const priceToY = (p: number) => 100 - ((p - yMin) / yRange) * 100;
 
+  // Build line segments with precise boundary interpolation
   const segments: { d: string; inRange: boolean }[] = [];
   let currentSegment: { points: string[]; inRange: boolean } | null = null;
+
+  const lerp = (x1: number, y1: number, x2: number, y2: number, targetY: number) => {
+    if (y2 === y1) return x1;
+    return x1 + ((targetY - y1) / (y2 - y1)) * (x2 - x1);
+  };
 
   for (let i = 0; i < priceValues.length; i++) {
     const p = priceValues[i];
@@ -121,14 +127,21 @@ function PriceChart({
     const pointInRange = p >= lowerPrice && p <= upperPrice;
     const coord = `${x.toFixed(2)} ${y.toFixed(2)}`;
 
-    if (!currentSegment || currentSegment.inRange !== pointInRange) {
-      if (currentSegment) {
-        segments.push({ d: "M " + currentSegment.points.join(" L "), inRange: currentSegment.inRange });
-      }
-      currentSegment = {
-        points: currentSegment ? [currentSegment.points[currentSegment.points.length - 1], coord] : [coord],
-        inRange: pointInRange,
-      };
+    if (i > 0 && currentSegment && currentSegment.inRange !== pointInRange) {
+      const prevP = priceValues[i - 1];
+      const prevX = ((i - 1) / (priceValues.length - 1)) * 100;
+      const boundary = pointInRange
+        ? (prevP < lowerPrice ? lowerPrice : upperPrice)
+        : (p < lowerPrice ? lowerPrice : upperPrice);
+      const bx = lerp(prevX, prevP, x, p, boundary);
+      const by = priceToY(boundary);
+      const bCoord = `${bx.toFixed(2)} ${by.toFixed(2)}`;
+
+      currentSegment.points.push(bCoord);
+      segments.push({ d: "M " + currentSegment.points.join(" L "), inRange: currentSegment.inRange });
+      currentSegment = { points: [bCoord, coord], inRange: pointInRange };
+    } else if (!currentSegment) {
+      currentSegment = { points: [coord], inRange: pointInRange };
     } else {
       currentSegment.points.push(coord);
     }
@@ -394,10 +407,29 @@ export function PositionDashboard({
   const m = position.metrics;
   const [duration, setDuration] = useState<Duration>("WEEK");
   const { prices } = usePoolPrices(position.pool.poolId, duration);
-  const { clearSelection } = usePositionContext();
+  const { positions, clearSelection } = usePositionContext();
   const { address } = useAccount();
   const [activeTab, setActiveTab] = useState<"rebalances" | "activity">("rebalances");
   const [rebalanceRecords, setRebalanceRecords] = useState<RebalanceRecord[]>([]);
+
+  // All tokenIds that belong to the same pool as this position
+  const poolTokenIds = useMemo(() => {
+    const c0 = position.poolKey.currency0.toLowerCase();
+    const c1 = position.poolKey.currency1.toLowerCase();
+    const fee = position.poolKey.fee;
+    const ids = new Set<string>();
+    ids.add(position.tokenId);
+    for (const p of positions) {
+      if (
+        p.poolKey.currency0.toLowerCase() === c0 &&
+        p.poolKey.currency1.toLowerCase() === c1 &&
+        p.poolKey.fee === fee
+      ) {
+        ids.add(p.tokenId);
+      }
+    }
+    return ids;
+  }, [position, positions]);
 
   // Fetch rebalance records (shared between chart dots and table)
   useEffect(() => {
@@ -407,14 +439,14 @@ export function PositionDashboard({
       fetch(`${API_URL}/api/rebalances?${params}`)
         .then((r) => r.json())
         .then((data: RebalanceRecord[]) => {
-          if (Array.isArray(data)) setRebalanceRecords(data);
+          if (Array.isArray(data)) setRebalanceRecords(data.filter((r) => poolTokenIds.has(r.tokenId)));
         })
         .catch(() => {});
     };
     fetchRebalances();
     const interval = setInterval(fetchRebalances, 30_000);
     return () => clearInterval(interval);
-  }, [address]);
+  }, [address, poolTokenIds]);
 
   return (
     <div className="mx-auto w-full max-w-4xl px-6 py-6">
