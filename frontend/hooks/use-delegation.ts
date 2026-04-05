@@ -63,9 +63,7 @@ export function useDelegation() {
     fetch(`${API_URL}/api/agent`)
       .then((r) => r.json())
       .then((data) => setAgentAddress(data.address as Address))
-      .catch(() => {
-        console.warn("Backend not available, agent address unknown");
-      });
+      .catch(() => {});
   }, []);
 
   // Check delegation status
@@ -253,14 +251,6 @@ export function useDelegation() {
           ],
         });
 
-        console.log("[delegate] User signed:", signature);
-        console.log("[delegate] Nonce:", nonce.toString());
-        console.log("[delegate] Calls count:", calls.length);
-        console.log("[delegate] Calls:", calls.map(c => ({ to: c.to, dataLen: c.data.length })));
-        console.log("[delegate] Domain:", domain);
-        console.log("[delegate] Message:", JSON.stringify(signedBatchedCall, null, 2));
-        console.log("[delegate] Sending to relayer...");
-
         // Send to backend relayer — it calls execute(SignedBatchedCall, signature) on user's EOA
         const res = await fetch(`${API_URL}/api/delegate`, {
           method: "POST",
@@ -300,15 +290,13 @@ export function useDelegation() {
             ? JSON.parse(raw)
             : { riskProfile: "medium", maxSlippage: 50, autoRebalance: true };
           await syncSettingsToBackend(address, currentSettings);
-        } catch (e) {
-          console.warn("[delegate] Failed to sync settings:", e);
+        } catch {
+          // Settings sync is best-effort
         }
 
         setStatus("delegated");
         return true;
       } catch (err: any) {
-        console.error("Delegation failed:", err);
-        console.error("Details:", JSON.stringify(err, Object.getOwnPropertyNames(err)));
         setError(err.shortMessage || err.message || "Delegation failed");
         return false;
       } finally {

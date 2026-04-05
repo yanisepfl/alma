@@ -41,8 +41,8 @@ export async function syncSettingsToBackend(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ address, settings }),
     });
-  } catch (e) {
-    console.warn("[settings] Failed to sync to backend:", e);
+  } catch {
+    // Best-effort sync
   }
 }
 

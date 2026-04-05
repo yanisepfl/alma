@@ -85,16 +85,3 @@ export const QUIRKY_MESSAGES = [
   "All systems operational.",
 ];
 
-export const GENERAL_SUGGESTIONS = [
-  "How does concentrated liquidity work?",
-  "What is impermanent loss?",
-  "When should I rebalance my position?",
-  "Explain tick ranges to me",
-];
-
-export const POSITION_SUGGESTIONS = [
-  "Am I in range?",
-  "Should I rebalance?",
-  "Claim my fees and add them to the range",
-  "What's my position worth?",
-];

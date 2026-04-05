@@ -19,7 +19,7 @@ const UINT256 = 2n ** 256n;
 
 function getTokenDecimals(symbol: string): number {
   const decimals: Record<string, number> = {
-    ETH: 18, WETH: 18, USDC: 6, USDS: 18, cbBTC: 8,
+    ETH: 18, WETH: 18, USDC: 6, USDS: 18, cbBTC: 8, VIRTUAL: 18, wstETH: 18,
   };
   return decimals[symbol] ?? 18;
 }
@@ -85,10 +85,17 @@ export async function enrichPosition(
     price0 = 1;
     price1 = poolPrice > 0 ? 1 / poolPrice : 0;
   } else {
-    // Neither is a stablecoin — try CoinGecko
+    // Neither is a stablecoin — try CoinGecko first, then derive from pool ratio
     const prices = await getTokenPrices([token0Symbol, token1Symbol]);
     price0 = prices[token0Symbol] ?? 0;
     price1 = prices[token1Symbol] ?? 0;
+
+    // If one price is known but not the other, derive from pool ratio
+    if (price0 > 0 && price1 === 0 && poolPrice > 0) {
+      price1 = price0 / poolPrice;
+    } else if (price1 > 0 && price0 === 0 && poolPrice > 0) {
+      price0 = price1 * poolPrice;
+    }
   }
 
   const positionSizeUSD = parseFloat(amount0) * price0 + parseFloat(amount1) * price1;
@@ -138,8 +145,8 @@ export async function enrichPosition(
       fee0Raw = (delta0 * posLiq) / Q128;
       fee1Raw = (delta1 * posLiq) / Q128;
     }
-  } catch (err) {
-    console.warn("Fee calculation failed:", err);
+  } catch {
+    // Fee calculation may fail for some positions
   }
 
   const fee0 = formatUnits(fee0Raw.toString(), dec0);
