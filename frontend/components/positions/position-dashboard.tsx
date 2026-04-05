@@ -328,7 +328,7 @@ function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
     fetchRebalances();
     const interval = setInterval(fetchRebalances, 30_000);
     return () => clearInterval(interval);
-  }, [tokenId, ownerAddress]);
+  }, [ownerAddress]);
 
   if (records.length === 0) {
     return (
