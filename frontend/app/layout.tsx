@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   title: "Alma",
   description: "Autonomous liquidity management agent",
   icons: {
-    icon: "/logo.png",
+    icon: "/logo_white.png",
   },
 };
 

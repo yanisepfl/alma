@@ -33,11 +33,26 @@ function timeAgo(ts: number): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-function shortAddr(addr: string): string {
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+function tickToPrice(tick: number): string {
+  const price = Math.pow(1.0001, tick);
+  if (price >= 0.01 && price <= 100_000) return `$${price.toFixed(2)}`;
+  return price.toPrecision(4);
 }
 
-// ── Price Chart (larger version) ─────────────────────────────────────────
+// ── Rebalance record type (shared by chart + table) ─────────────────────
+
+interface RebalanceRecord {
+  id: string;
+  tokenId: string;
+  owner: string;
+  timestamp: number;
+  success: boolean;
+  txHash?: string;
+  newRange?: { tickLower: number; tickUpper: number };
+  error?: string;
+}
+
+// ── Price Chart ─────────────────────────────────────────────────────────
 
 function PriceChart({
   prices,
@@ -45,12 +60,14 @@ function PriceChart({
   tickUpper,
   token0Symbol,
   token1Symbol,
+  rebalances,
 }: {
   prices: PricePoint[];
   tickLower: number;
   tickUpper: number;
   token0Symbol: string;
   token1Symbol: string;
+  rebalances: RebalanceRecord[];
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ x: number; price: number; time: number } | null>(null);
@@ -74,21 +91,20 @@ function PriceChart({
     );
   }
 
-  const tickToPrice = (tick: number) => Math.pow(1.0001, tick);
-  const lowerPrice = tickToPrice(tickLower);
-  const upperPrice = tickToPrice(tickUpper);
+  // Chart displays token0Price (token0 in terms of token1).
+  // Uniswap tick price: 1.0001^tick = token1/token0, so token0Price = 1 / 1.0001^tick
+  const tickToPriceNum = (tick: number) => 1 / Math.pow(1.0001, tick);
+  // Lower tick = lower token1/token0 = higher token0/token1, so we swap
+  const lowerPrice = tickToPriceNum(tickUpper);
+  const upperPrice = tickToPriceNum(tickLower);
 
   const minP = Math.min(...priceValues);
   const maxP = Math.max(...priceValues);
   const pricePad = (maxP - minP) * 0.15 || maxP * 0.02;
 
-  let yMin = minP - pricePad;
-  let yMax = maxP + pricePad;
-
-  const showLowerRange = lowerPrice >= minP - pricePad;
-  const showUpperRange = upperPrice <= maxP + pricePad;
-  if (showLowerRange) yMin = Math.min(yMin, lowerPrice - pricePad * 0.5);
-  if (showUpperRange) yMax = Math.max(yMax, upperPrice + pricePad * 0.5);
+  // Always include range bounds in the view
+  let yMin = Math.min(minP - pricePad, lowerPrice - pricePad * 0.3);
+  let yMax = Math.max(maxP + pricePad, upperPrice + pricePad * 0.3);
 
   const yRange = yMax - yMin || 1;
   const priceToY = (p: number) => 100 - ((p - yMin) / yRange) * 100;
@@ -123,6 +139,22 @@ function PriceChart({
   const rangeBotY = priceToY(lowerPrice);
   const hoverY = hover ? priceToY(hover.price) : 0;
 
+  // Map rebalance timestamps to x positions on chart
+  const chartStartTime = prices[0].timestamp;
+  const chartEndTime = prices[prices.length - 1].timestamp;
+  const chartTimeRange = chartEndTime - chartStartTime || 1;
+  const rebalanceDots = rebalances
+    .filter((r) => r.success && r.timestamp / 1000 >= chartStartTime && r.timestamp / 1000 <= chartEndTime)
+    .map((r) => {
+      const tSec = r.timestamp / 1000;
+      const xPct = ((tSec - chartStartTime) / chartTimeRange) * 100;
+      // Find nearest price point
+      const idx = Math.round(((tSec - chartStartTime) / chartTimeRange) * (prices.length - 1));
+      const nearestPrice = prices[Math.max(0, Math.min(idx, prices.length - 1))]?.token0Price ?? 0;
+      const yPct = priceToY(nearestPrice);
+      return { x: xPct, y: yPct, time: tSec };
+    });
+
   const STABLES = ["USDC", "USDS", "USDT", "DAI"];
   const isUSDPair = STABLES.includes(token1Symbol) || STABLES.includes(token0Symbol);
   const formatPrice = (p: number) => p >= 1 ? p.toFixed(2) : p.toFixed(6);
@@ -137,18 +169,15 @@ function PriceChart({
     <div className="relative w-full h-full" ref={containerRef}
       onMouseMove={handleMouseMove} onMouseLeave={() => setHover(null)}
     >
-      {showUpperRange && (
-        <div className="absolute right-1 text-[9px] text-muted-foreground/40 pointer-events-none"
-          style={{ top: `${rangeTopY}%`, transform: "translateY(-100%)" }}>
-          {formatRangeLabel(upperPrice)}
-        </div>
-      )}
-      {showLowerRange && (
-        <div className="absolute right-1 text-[9px] text-muted-foreground/40 pointer-events-none"
-          style={{ top: `${rangeBotY}%` }}>
-          {formatRangeLabel(lowerPrice)}
-        </div>
-      )}
+      {/* Range labels */}
+      <div className="absolute right-1 text-[9px] text-green-400/50 pointer-events-none"
+        style={{ top: `${rangeTopY}%`, transform: "translateY(-100%)" }}>
+        {formatRangeLabel(upperPrice)}
+      </div>
+      <div className="absolute right-1 text-[9px] text-green-400/50 pointer-events-none"
+        style={{ top: `${rangeBotY}%` }}>
+        {formatRangeLabel(lowerPrice)}
+      </div>
 
       {hover && (
         <>
@@ -169,35 +198,50 @@ function PriceChart({
       )}
 
       <svg viewBox="0 0 100 100" className="w-full h-full" preserveAspectRatio="none">
-        {(showLowerRange || showUpperRange) && (
-          <rect
-            x="0" y={showUpperRange ? rangeTopY : 0}
-            width="100"
-            height={Math.max(0.5, (showLowerRange ? rangeBotY : 100) - (showUpperRange ? rangeTopY : 0))}
-            fill="white" fillOpacity="0.03"
-          />
-        )}
-        {showUpperRange && (
-          <line x1="0" y1={rangeTopY} x2="100" y2={rangeTopY}
-            stroke="white" strokeWidth="0.5" strokeOpacity="0.12" strokeDasharray="2,2"
-            vectorEffect="non-scaling-stroke" />
-        )}
-        {showLowerRange && (
-          <line x1="0" y1={rangeBotY} x2="100" y2={rangeBotY}
-            stroke="white" strokeWidth="0.5" strokeOpacity="0.12" strokeDasharray="2,2"
-            vectorEffect="non-scaling-stroke" />
-        )}
+        {/* Range band */}
+        <rect
+          x="0" y={rangeTopY}
+          width="100"
+          height={Math.max(0.5, rangeBotY - rangeTopY)}
+          fill="#22c55e" fillOpacity="0.06"
+        />
+        {/* Upper range line */}
+        <line x1="0" y1={rangeTopY} x2="100" y2={rangeTopY}
+          stroke="#22c55e" strokeWidth="0.5" strokeOpacity="0.3" strokeDasharray="2,2"
+          vectorEffect="non-scaling-stroke" />
+        {/* Lower range line */}
+        <line x1="0" y1={rangeBotY} x2="100" y2={rangeBotY}
+          stroke="#22c55e" strokeWidth="0.5" strokeOpacity="0.3" strokeDasharray="2,2"
+          vectorEffect="non-scaling-stroke" />
+        {/* Price line segments */}
         {segments.map((seg, i) => (
           <path key={i} d={seg.d} fill="none"
             stroke={seg.inRange ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.3)"}
             strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
         ))}
+        {/* Rebalance dots */}
+        {rebalanceDots.map((dot, i) => (
+          <circle key={`reb-${i}`} cx={dot.x} cy={dot.y} r="3"
+            fill="#22c55e" fillOpacity="0.7"
+            stroke="#22c55e" strokeWidth="1" strokeOpacity="0.3"
+            vectorEffect="non-scaling-stroke"
+            style={{ paintOrder: "stroke" }} />
+        ))}
+        {/* Hover crosshair */}
         {hover && (
           <line x1={hover.x} y1="0" x2={hover.x} y2="100"
             stroke="white" strokeWidth="0.5" strokeOpacity="0.15"
             vectorEffect="non-scaling-stroke" />
         )}
       </svg>
+
+      {/* Rebalance dot legend */}
+      {rebalanceDots.length > 0 && (
+        <div className="absolute bottom-1 left-1 flex items-center gap-1 pointer-events-none">
+          <div className="size-1.5 rounded-full bg-green-500/70" />
+          <span className="text-[8px] text-muted-foreground/40">rebalance</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -223,7 +267,7 @@ interface Activity {
   txHashes?: string[];
 }
 
-function ActionsList({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?: string }) {
+function ActionsList({ ownerAddress }: { ownerAddress?: string }) {
   const [actions, setActions] = useState<Activity[]>([]);
 
   useEffect(() => {
@@ -234,7 +278,7 @@ function ActionsList({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?
         .then((r) => r.json())
         .then((data: Activity[]) => {
           if (!Array.isArray(data)) return;
-          const filtered = data.filter((a) => a.tokenId === tokenId);
+          const filtered = data.filter((a) => a.type !== "monitor");
           setActions(filtered.slice(0, 10));
         })
         .catch(() => {});
@@ -242,42 +286,42 @@ function ActionsList({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?
     fetchActions();
     const interval = setInterval(fetchActions, 15_000);
     return () => clearInterval(interval);
-  }, [tokenId, ownerAddress]);
+  }, [ownerAddress]);
 
   if (actions.length === 0) {
     return (
-      <div className="flex items-center justify-center h-24 text-xs text-muted-foreground/40">
-        No actions yet — agent will monitor this position
+      <div className="flex items-center justify-center h-20 text-xs text-muted-foreground/40">
+        No activity yet
       </div>
     );
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       {actions.map((action) => (
         <div
           key={action.id}
-          className="flex items-start gap-3 rounded-lg border border-border/50 bg-card px-3 py-2.5"
+          className="flex items-start gap-2.5 px-2 py-2"
         >
           <div className="mt-0.5">
             {action.status === "completed" ? (
-              <CheckCircleIcon className="size-3.5 text-muted-foreground" />
+              <CheckCircleIcon className="size-3 text-muted-foreground/40" />
             ) : action.status === "failed" ? (
-              <AlertCircleIcon className="size-3.5 text-red-400" />
+              <AlertCircleIcon className="size-3 text-red-400/60" />
             ) : (
-              <ActivityIcon className="size-3.5 text-muted-foreground" />
+              <ActivityIcon className="size-3 text-muted-foreground/40" />
             )}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs text-foreground/80 leading-relaxed">{action.summary}</p>
+            <p className="text-[11px] text-foreground/70 leading-relaxed">{action.summary}</p>
             <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[10px] text-muted-foreground/40">{timeAgo(action.timestamp)}</span>
+              <span className="text-[10px] text-muted-foreground/30">{timeAgo(action.timestamp)}</span>
               {action.txHashes?.[0] && (
                 <a
                   href={`https://basescan.org/tx/${action.txHashes[0]}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[10px] text-blue-400/60 hover:text-blue-400 transition-colors"
+                  className="text-[10px] text-blue-400/50 hover:text-blue-400 transition-colors"
                 >
                   tx
                 </a>
@@ -290,46 +334,9 @@ function ActionsList({ tokenId, ownerAddress }: { tokenId: string; ownerAddress?
   );
 }
 
-// ── Rebalance History Table ──────────────────────────────────────────────
+// ── Rebalance History ───────────────────────────────────────────────────
 
-interface RebalanceRecord {
-  id: string;
-  tokenId: string;
-  owner: string;
-  timestamp: number;
-  success: boolean;
-  txHash?: string;
-  newRange?: { tickLower: number; tickUpper: number };
-  error?: string;
-}
-
-function tickToPrice(tick: number): string {
-  const price = Math.pow(1.0001, tick);
-  if (price >= 0.01 && price <= 100_000) {
-    return `$${price.toFixed(2)}`;
-  }
-  return price.toPrecision(4);
-}
-
-function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
-  const [records, setRecords] = useState<RebalanceRecord[]>([]);
-
-  useEffect(() => {
-    const fetchRebalances = () => {
-      const params = new URLSearchParams({ limit: "20" });
-      if (ownerAddress) params.set("address", ownerAddress);
-      fetch(`${API_URL}/api/rebalances?${params}`)
-        .then((r) => r.json())
-        .then((data: RebalanceRecord[]) => {
-          if (Array.isArray(data)) setRecords(data);
-        })
-        .catch(() => {});
-    };
-    fetchRebalances();
-    const interval = setInterval(fetchRebalances, 30_000);
-    return () => clearInterval(interval);
-  }, [ownerAddress]);
-
+function RebalanceHistory({ ownerAddress, records }: { ownerAddress?: string; records: RebalanceRecord[] }) {
   if (records.length === 0) {
     return (
       <div className="flex items-center justify-center h-20 text-xs text-muted-foreground/40">
@@ -339,56 +346,39 @@ function RebalanceHistory({ ownerAddress }: { ownerAddress?: string }) {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-muted-foreground/50 text-[10px] uppercase tracking-wider">
-            <th className="text-left py-2 px-2 font-medium">Position</th>
-            <th className="text-left py-2 px-2 font-medium">New Range ($)</th>
-            <th className="text-left py-2 px-2 font-medium">Status</th>
-            <th className="text-left py-2 px-2 font-medium">Time</th>
-            <th className="text-left py-2 px-2 font-medium">TX</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border/30">
-          {records.map((r) => (
-            <tr key={r.id} className="hover:bg-card/50 transition-colors">
-              <td className="py-2 px-2 text-foreground/80">#{r.tokenId}</td>
-              <td className="py-2 px-2 text-foreground/60">
+    <div className="space-y-1">
+      {records.map((r) => (
+        <div key={r.id} className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-card/30 transition-colors">
+          <div className="shrink-0">
+            {r.success ? (
+              <CheckCircleIcon className="size-3 text-green-400/60" />
+            ) : (
+              <AlertCircleIcon className="size-3 text-red-400/60" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-foreground/70">
                 {r.newRange
-                  ? `${tickToPrice(r.newRange.tickLower)} - ${tickToPrice(r.newRange.tickUpper)}`
-                  : "—"}
-              </td>
-              <td className="py-2 px-2">
-                {r.success ? (
-                  <span className="inline-flex items-center gap-1 text-green-400">
-                    <CheckCircleIcon className="size-3" /> Success
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 text-red-400">
-                    <AlertCircleIcon className="size-3" /> Failed
-                  </span>
-                )}
-              </td>
-              <td className="py-2 px-2 text-muted-foreground/50">{timeAgo(r.timestamp)}</td>
-              <td className="py-2 px-2">
-                {r.txHash ? (
-                  <a
-                    href={`https://basescan.org/tx/${r.txHash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-400/60 hover:text-blue-400 transition-colors"
-                  >
-                    {r.txHash.slice(0, 8)}...
-                  </a>
-                ) : (
-                  "—"
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  ? `${tickToPrice(r.newRange.tickLower)} – ${tickToPrice(r.newRange.tickUpper)}`
+                  : r.success ? "Rebalanced" : "Failed"}
+              </span>
+              <span className="text-[10px] text-muted-foreground/30">#{r.tokenId}</span>
+            </div>
+          </div>
+          <span className="text-[10px] text-muted-foreground/30 shrink-0">{timeAgo(r.timestamp)}</span>
+          {r.txHash && (
+            <a
+              href={`https://basescan.org/tx/${r.txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] text-blue-400/50 hover:text-blue-400 transition-colors shrink-0"
+            >
+              tx
+            </a>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -406,12 +396,30 @@ export function PositionDashboard({
   const { prices } = usePoolPrices(position.pool.poolId, duration);
   const { clearSelection } = usePositionContext();
   const { address } = useAccount();
-  const [activeTab, setActiveTab] = useState<"activity" | "rebalances">("rebalances");
+  const [activeTab, setActiveTab] = useState<"rebalances" | "activity">("rebalances");
+  const [rebalanceRecords, setRebalanceRecords] = useState<RebalanceRecord[]>([]);
+
+  // Fetch rebalance records (shared between chart dots and table)
+  useEffect(() => {
+    const fetchRebalances = () => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (address) params.set("address", address);
+      fetch(`${API_URL}/api/rebalances?${params}`)
+        .then((r) => r.json())
+        .then((data: RebalanceRecord[]) => {
+          if (Array.isArray(data)) setRebalanceRecords(data);
+        })
+        .catch(() => {});
+    };
+    fetchRebalances();
+    const interval = setInterval(fetchRebalances, 30_000);
+    return () => clearInterval(interval);
+  }, [address]);
 
   return (
     <div className="mx-auto w-full max-w-4xl px-6 py-6">
       {/* Back button + title */}
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-5">
         <button
           onClick={clearSelection}
           className="rounded-lg p-1.5 text-muted-foreground/60 hover:text-foreground hover:bg-muted/30 transition-colors cursor-pointer"
@@ -438,144 +446,129 @@ export function PositionDashboard({
       {/* Loading skeleton */}
       {!prices || prices.length === 0 || !m ? (
         <div className="space-y-4">
-          <div className="grid grid-cols-5 gap-4">
-            <div className="col-span-3 h-[240px] rounded-xl animate-pulse bg-card/50" />
-            <div className="col-span-2 grid grid-cols-2 gap-3">
-              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
-              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
-              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
-              <div className="h-[100px] rounded-xl animate-pulse bg-card/50" />
-            </div>
+          <div className="h-[220px] rounded-xl animate-pulse bg-card/50" />
+          <div className="grid grid-cols-4 gap-3">
+            <div className="h-14 rounded-lg animate-pulse bg-card/50" />
+            <div className="h-14 rounded-lg animate-pulse bg-card/50" />
+            <div className="h-14 rounded-lg animate-pulse bg-card/50" />
+            <div className="h-14 rounded-lg animate-pulse bg-card/50" />
           </div>
-          <div className="h-[200px] rounded-xl animate-pulse bg-card/50" />
+          <div className="h-[160px] rounded-xl animate-pulse bg-card/50" />
         </div>
       ) : (
         <>
-          {/* Chart + Stats row */}
-          <div className="grid grid-cols-5 gap-4 mb-6">
-            {/* Chart — takes 3 columns */}
-            <motion.div
-              className="col-span-3 rounded-xl border border-border/50 bg-card p-3 h-[240px] flex flex-col"
-              animate={{ opacity: 1, y: 0 }}
-              initial={{ opacity: 0, y: 6 }}
-              transition={{ duration: 0.3 }}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] text-muted-foreground/50">
-                  {position.token0Symbol} Price (in {position.token1Symbol})
-                </span>
-                <div className="flex gap-0.5">
-                  {DURATIONS.map((d) => (
-                    <button
-                      key={d.value}
-                      onClick={() => setDuration(d.value)}
-                      className={cn(
-                        "px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
-                        duration === d.value
-                          ? "bg-foreground/10 text-foreground"
-                          : "text-muted-foreground/40 hover:text-muted-foreground"
-                      )}
-                    >
-                      {d.label}
-                    </button>
-                  ))}
-                </div>
+          {/* Chart — full width */}
+          <motion.div
+            className="rounded-xl border border-border/50 bg-card p-3 h-[220px] flex flex-col mb-4"
+            animate={{ opacity: 1, y: 0 }}
+            initial={{ opacity: 0, y: 6 }}
+            transition={{ duration: 0.3 }}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] text-muted-foreground/50">
+                {position.token0Symbol} / {position.token1Symbol}
+              </span>
+              <div className="flex gap-0.5">
+                {DURATIONS.map((d) => (
+                  <button
+                    key={d.value}
+                    onClick={() => setDuration(d.value)}
+                    className={cn(
+                      "px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
+                      duration === d.value
+                        ? "bg-foreground/10 text-foreground"
+                        : "text-muted-foreground/40 hover:text-muted-foreground"
+                    )}
+                  >
+                    {d.label}
+                  </button>
+                ))}
               </div>
-              <div className="flex-1 min-h-0">
-                <PriceChart
-                  prices={prices}
-                  tickLower={position.tickLower}
-                  tickUpper={position.tickUpper}
-                  token0Symbol={position.token0Symbol}
-                  token1Symbol={position.token1Symbol}
-                />
+            </div>
+            <div className="flex-1 min-h-0">
+              <PriceChart
+                prices={prices}
+                tickLower={position.tickLower}
+                tickUpper={position.tickUpper}
+                token0Symbol={position.token0Symbol}
+                token1Symbol={position.token1Symbol}
+                rebalances={rebalanceRecords}
+              />
+            </div>
+          </motion.div>
+
+          {/* Stats — single row of 4 compact cards */}
+          <div className="grid grid-cols-4 gap-3 mb-5">
+            <motion.div
+              animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 4 }}
+              transition={{ delay: 0.05, duration: 0.2 }}
+              className="rounded-lg border border-border/40 bg-card/60 px-3 py-2"
+            >
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground/40 font-medium">Size</div>
+              <div className="text-sm font-medium mt-0.5">{formatUSD(m.positionSizeUSD)}</div>
+            </motion.div>
+            <motion.div
+              animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 4 }}
+              transition={{ delay: 0.08, duration: 0.2 }}
+              className="rounded-lg border border-border/40 bg-card/60 px-3 py-2"
+            >
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground/40 font-medium">Fees</div>
+              <div className="text-sm font-medium mt-0.5">{formatUSD(m.feesEarnedUSD)}</div>
+            </motion.div>
+            <motion.div
+              animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 4 }}
+              transition={{ delay: 0.11, duration: 0.2 }}
+              className="rounded-lg border border-border/40 bg-card/60 px-3 py-2"
+            >
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground/40 font-medium">Price</div>
+              <div className="text-sm font-medium mt-0.5">{parseFloat(m.currentPrice).toFixed(2)}</div>
+            </motion.div>
+            <motion.div
+              animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 4 }}
+              transition={{ delay: 0.14, duration: 0.2 }}
+              className="rounded-lg border border-border/40 bg-card/60 px-3 py-2"
+            >
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground/40 font-medium">APY</div>
+              <div className="text-sm font-medium mt-0.5">
+                {m.apyEstimate != null ? `${m.apyEstimate.toFixed(1)}%` : "—"}
               </div>
             </motion.div>
-
-            {/* 2x2 Stats — takes 2 columns */}
-            <div className="col-span-2 grid grid-cols-2 gap-3">
-              <motion.div
-                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-                transition={{ delay: 0.05, duration: 0.3 }}
-                className="rounded-xl border border-border/50 bg-card px-4 py-3"
-              >
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Size</div>
-                <div className="mt-1 text-sm font-medium">{formatUSD(m.positionSizeUSD)}</div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground/40">
-                  {parseFloat(m.amount0).toFixed(4)} {position.token0Symbol}
-                </div>
-              </motion.div>
-
-              <motion.div
-                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-                transition={{ delay: 0.1, duration: 0.3 }}
-                className="rounded-xl border border-border/50 bg-card px-4 py-3"
-              >
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Fees</div>
-                <div className="mt-1 text-sm font-medium">{formatUSD(m.feesEarnedUSD)}</div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground/40">{m.feePercent} fee tier</div>
-              </motion.div>
-
-              <motion.div
-                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-                transition={{ delay: 0.15, duration: 0.3 }}
-                className="rounded-xl border border-border/50 bg-card px-4 py-3"
-              >
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">Price</div>
-                <div className="mt-1 text-sm font-medium">
-                  {parseFloat(m.currentPrice).toFixed(2)}
-                </div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground/40">
-                  {position.token1Symbol}/{position.token0Symbol}
-                </div>
-              </motion.div>
-
-              <motion.div
-                animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-                transition={{ delay: 0.2, duration: 0.3 }}
-                className="rounded-xl border border-border/50 bg-card px-4 py-3"
-              >
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">APY</div>
-                <div className="mt-1 text-sm font-medium">
-                  {m.apyEstimate != null ? `${m.apyEstimate.toFixed(1)}%` : "—"}
-                </div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground/40">estimated</div>
-              </motion.div>
-            </div>
           </div>
 
-          {/* Tabbed section: Activity + Rebalances */}
+          {/* Tabs: Rebalances (left, default) | Activity (right) */}
           <motion.div
             animate={{ opacity: 1, y: 0 }} initial={{ opacity: 0, y: 6 }}
-            transition={{ delay: 0.25, duration: 0.3 }}
+            transition={{ delay: 0.2, duration: 0.3 }}
           >
-            {/* Tab header */}
-            <div className="flex items-center gap-4 mb-3">
-              <button
-                onClick={() => setActiveTab("activity")}
-                className={cn(
-                  "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
-                  activeTab === "activity" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
-                )}
-              >
-                Activity
-              </button>
+            <div className="flex items-center gap-4 mb-3 border-b border-border/30 pb-2">
               <button
                 onClick={() => setActiveTab("rebalances")}
                 className={cn(
-                  "flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider transition-colors cursor-pointer",
-                  activeTab === "rebalances" ? "text-foreground/80" : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                  "text-xs font-medium transition-colors cursor-pointer pb-1",
+                  activeTab === "rebalances"
+                    ? "text-foreground/80 border-b border-foreground/30"
+                    : "text-muted-foreground/40 hover:text-muted-foreground/60"
                 )}
               >
                 Rebalances
               </button>
+              <button
+                onClick={() => setActiveTab("activity")}
+                className={cn(
+                  "text-xs font-medium transition-colors cursor-pointer pb-1",
+                  activeTab === "activity"
+                    ? "text-foreground/80 border-b border-foreground/30"
+                    : "text-muted-foreground/40 hover:text-muted-foreground/60"
+                )}
+              >
+                Activity
+              </button>
             </div>
 
-            {/* Tab content */}
-            {activeTab === "activity" ? (
-              <ActionsList tokenId={position.tokenId} ownerAddress={address} />
+            {activeTab === "rebalances" ? (
+              <RebalanceHistory ownerAddress={address} records={rebalanceRecords} />
             ) : (
-              <RebalanceHistory ownerAddress={address} />
+              <ActionsList ownerAddress={address} />
             )}
           </motion.div>
         </>
